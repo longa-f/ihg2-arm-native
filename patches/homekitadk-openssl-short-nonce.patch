@@ -1,0 +1,88 @@
+diff --git a/PAL/Crypto/OpenSSL/HAPOpenSSL.c b/PAL/Crypto/OpenSSL/HAPOpenSSL.c
+index fc07634..87870b6 100644
+--- a/PAL/Crypto/OpenSSL/HAPOpenSSL.c
++++ b/PAL/Crypto/OpenSSL/HAPOpenSSL.c
+@@ -417,0 +418,14 @@ HAP_STATIC_ASSERT(sizeof(HAP_chacha20_poly1305_ctx) >= sizeof(EVP_CIPHER_CTX_Han
++// HomeKit uses both 8-byte protocol nonces (for pairing messages) and
++// 12-byte transport nonces. OpenSSL's ChaCha20-Poly1305 implementation only
++// accepts a 12-byte IV, so match the MbedTLS PAL's zero-left-padding behavior.
++static void normalize_chacha20_poly1305_nonce(
++        uint8_t nonce[CHACHA20_POLY1305_NONCE_BYTES_MAX], const uint8_t* n, size_t n_len) {
++    if (n_len > CHACHA20_POLY1305_NONCE_BYTES_MAX) {
++        n_len = CHACHA20_POLY1305_NONCE_BYTES_MAX;
++    }
++    memset(nonce, 0, CHACHA20_POLY1305_NONCE_BYTES_MAX);
++    if (n_len) {
++        memcpy(nonce + CHACHA20_POLY1305_NONCE_BYTES_MAX - n_len, n, n_len);
++    }
++}
++
+@@ -458,0 +473,2 @@ void HAP_chacha20_poly1305_update_enc(
++        uint8_t nonce[CHACHA20_POLY1305_NONCE_BYTES_MAX];
++        normalize_chacha20_poly1305_nonce(nonce, n, n_len);
+@@ -464 +480,2 @@ void HAP_chacha20_poly1305_update_enc(
+-        ret = EVP_CIPHER_CTX_ctrl(handle->ctx, EVP_CTRL_AEAD_SET_IVLEN, n_len, NULL);
++        ret = EVP_CIPHER_CTX_ctrl(
++                handle->ctx, EVP_CTRL_AEAD_SET_IVLEN, CHACHA20_POLY1305_NONCE_BYTES_MAX, NULL);
+@@ -466 +483 @@ void HAP_chacha20_poly1305_update_enc(
+-        ret = EVP_EncryptInit_ex(handle->ctx, NULL, NULL, k, n);
++        ret = EVP_EncryptInit_ex(handle->ctx, NULL, NULL, k, nonce);
+@@ -513,0 +531,2 @@ void HAP_chacha20_poly1305_update_dec(
++        uint8_t nonce[CHACHA20_POLY1305_NONCE_BYTES_MAX];
++        normalize_chacha20_poly1305_nonce(nonce, n, n_len);
+@@ -517 +536,2 @@ void HAP_chacha20_poly1305_update_dec(
+-        ret = EVP_CIPHER_CTX_ctrl(handle->ctx, EVP_CTRL_AEAD_SET_IVLEN, n_len, NULL);
++        ret = EVP_CIPHER_CTX_ctrl(
++                handle->ctx, EVP_CTRL_AEAD_SET_IVLEN, CHACHA20_POLY1305_NONCE_BYTES_MAX, NULL);
+@@ -519 +539 @@ void HAP_chacha20_poly1305_update_dec(
+-        ret = EVP_DecryptInit_ex(handle->ctx, NULL, NULL, k, n);
++        ret = EVP_DecryptInit_ex(handle->ctx, NULL, NULL, k, nonce);
+diff --git a/Tests/HAPCryptoTest.c b/Tests/HAPCryptoTest.c
+index bc7f331..5eb1cdd 100644
+--- a/Tests/HAPCryptoTest.c
++++ b/Tests/HAPCryptoTest.c
+@@ -164,0 +165,42 @@ static const uint8_t chacha20_poly1305_ct[] = {
++static void test_homekit_short_chacha_nonce(void) {
++    static const uint8_t key[CHACHA20_POLY1305_KEY_BYTES] = { 0 };
++    static const uint8_t shortNonce[] = "PS-Msg05";
++    static const uint8_t plaintext[] = "pairing nonce regression";
++    uint8_t paddedNonce[CHACHA20_POLY1305_NONCE_BYTES_MAX] = { 0 };
++    memcpy(paddedNonce + sizeof paddedNonce - (sizeof shortNonce - 1), shortNonce, sizeof shortNonce - 1);
++
++    uint8_t shortCiphertext[sizeof plaintext - 1];
++    uint8_t paddedCiphertext[sizeof plaintext - 1];
++    uint8_t shortTag[CHACHA20_POLY1305_TAG_BYTES];
++    uint8_t paddedTag[CHACHA20_POLY1305_TAG_BYTES];
++    HAP_chacha20_poly1305_encrypt(
++            shortTag,
++            shortCiphertext,
++            plaintext,
++            sizeof plaintext - 1,
++            shortNonce,
++            sizeof shortNonce - 1,
++            key);
++    HAP_chacha20_poly1305_encrypt(
++            paddedTag,
++            paddedCiphertext,
++            plaintext,
++            sizeof plaintext - 1,
++            paddedNonce,
++            sizeof paddedNonce,
++            key);
++    HAPAssert(!memcmp(shortCiphertext, paddedCiphertext, sizeof shortCiphertext));
++    HAPAssert(!memcmp(shortTag, paddedTag, sizeof shortTag));
++
++    uint8_t decoded[sizeof plaintext - 1];
++    HAPAssert(!HAP_chacha20_poly1305_decrypt(
++            shortTag,
++            decoded,
++            shortCiphertext,
++            sizeof shortCiphertext,
++            shortNonce,
++            sizeof shortNonce - 1,
++            key));
++    HAPAssert(!memcmp(decoded, plaintext, sizeof decoded));
++}
++
+@@ -489,0 +532 @@ int main() {
++    test_homekit_short_chacha_nonce();

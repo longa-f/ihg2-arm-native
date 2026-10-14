@@ -1,0 +1,59 @@
+# Native build outputs and generated packages
+/build/
+/out/
+/dist/
+/cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.elf
+*.class
+*.gcda
+*.gcno
+*.gcov
+core
+core.*
+
+# Android Studio / Gradle outputs
+/.gradle/
+/.cxx/
+/.externalNativeBuild/
+/local.properties
+*.apk
+*.aab
+
+# IDE, editor, and operating-system files
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+/.venv/
+
+# Runtime state, logs, captures, and household credentials
+/third_party/HomeKitADK/Output/
+/third_party/HomeKitADK/Applications/Bridge/
+/config/bridge.ini
+/config/pairing-code.txt
+/data/
+/logs/
+*.log
+*.pcap
+*.key
+*.pem
+.env
+.env.*
