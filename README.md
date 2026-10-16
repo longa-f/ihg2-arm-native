@@ -1,73 +1,68 @@
-# IHG2 ARM Native Bridge
+# IHG2 中控屏本地桥接快速安装
 
-An isolated, low-resource bridge project for exposing IHG2 gateway accessories to Apple Home from the RK3288 control panel. It reuses the heartbeat and encrypted-frame codec already implemented and tested in the separate C++ bridge; it does not use Home Assistant, MQTT, Homebridge, cloud APIs, or scene editing.
+本程序把 IHG2 网关配件接入 Apple 家庭。桥接服务直接运行在中控屏上，不依赖 Home Assistant、Homebridge 或额外服务器。
 
-## Target
+## 开始前
 
-- Control panel: Android 7.1.2, 32-bit ARMv7 (`armeabi-v7a`), root access.
-- Runtime shape: one supervised native process; fixed-size buffers and device tables; no general-purpose broker or scripting runtime.
-- Data path: gateway UDP reports/commands ↔ bridge state table ↔ HomeKit HAP over IP.
-- Scope: lighting/accessory state and control only. Apple Home automations remain in Apple Home.
+- 中控屏须为已验证型号范围：RK3288 同类硬件、32 位 ARMv7、Android API 25 或更新版本，并具有 root 权限、系统 DNS-SD 库和预期的启动服务接口。它不是适用于任意 Android 设备的通用安装包。
+- 厂商的“全屋智控”应用须已登录、连接网关并同步设备清单。
+- 使用 Windows 或 Linux 电脑；电脑需要安装 Android Platform Tools（adb）。中控屏须已开启 ADB 调试，并授权这台电脑。首次启用和授权不能由安装程序远程完成。
+- 电脑、中控屏和网关须能在局域网中互相通信。
 
-## Status
+## 安装
 
-This is a separate, native ARMv7 service for the RK3288 control panel. It uses one event loop, the ported AES-128-CBC gateway codec, a connected UDP socket with an ephemeral source port, and Apple's HAP bridge API. It has no runtime dependency on the current server, Home Assistant, MQTT, Homebridge, Node.js, or cloud APIs. Gateway access and HomeKit are separate transports: UDP to the gateway and TCP 53760 for Apple Home.
+### 1. 解压发布包
 
-The service exposes the inventory through stable HomeKit accessory IDs. Lights use a Light Bulb service with On and, when declared by the gateway, Brightness and Color Temperature. Window coverings use the HomeKit Window Covering service with current position, target position, and movement state; the gateway's reported position is in percent. Air conditioners use the HomeKit Thermostat service with current temperature, target temperature, power, and mode controls. The numeric AC mode map (0 auto, 1 cool, 2 dry, 3 fan, 4 heat) is provisional pending a live mode-change confirmation; HomeKit has no dry or fan target mode. Gateway radar/motion sensors use the native HomeKit Occupancy Sensor service, and water-leak sensors use the Leak Sensor service; both are read-only and send HomeKit state notifications. Other controllable entries expose an on/off Switch service. A manually configured lock Wi-Fi presence sensor appears as a HomeKit Occupancy Sensor. Scene editing is outside this bridge's scope.
+把压缩包解压到维护电脑上的一个目录，在该目录中运行以下命令。
 
-Color temperature is exposed in HomeKit mirek units and mapped to the gateway's 0–100 `colortemp` field. A user-confirmed warmest setting on the bedroom dimmer strip read back as gateway value `0`, so the direction is inverted: `0` maps to HomeKit's warm endpoint and `100` to its cool endpoint. Intermediate values are currently interpolated linearly; only the warm endpoint has been confirmed live.
+### 2. 运行安装前检查（建议）
 
-The packet codec validates packet bounds, checksums, gateway identity, message type, and decrypted JSON before changing state. The gateway protocol uses AES-CBC and additive checksums, not cryptographic packet authentication. HomeKit pairing itself uses the HAP cryptographic session. The private gateway key and HomeKit pairing store live only on the panel.
+Linux：
 
-The HAP engine is the pinned Apple HomeKit ADK submodule. ARM builds statically link OpenSSL 3.5.9, so they do not use Android's private `libcrypto`; the only panel library dependency is its existing DNS-SD client library, `/system/lib/libmdnssd.so`.
+    ./preflight.sh 192.168.5.23
 
-## Build and deploy
+Windows PowerShell：
 
-### Versioning
+    .\preflight.ps1 192.168.5.23
 
-`VERSION` is the single source of truth and uses `MAJOR.MINOR.PATCH`. Increase PATCH for bug fixes, MINOR for backward-compatible features, and MAJOR for incompatible changes. The build embeds the number in `--version`, `--doctor`, and HomeKit firmware information. Each release archive includes the same `VERSION`, uses a versioned filename, and has a `.sha256` checksum beside it. The installer checks that the archive version matches the ARM binary, stores it at `/data/local/ihg2-arm-native/VERSION`, and keeps the previous value in `VERSION.rollback` on updates.
+将示例地址替换成中控屏的 IP。脚本会检查 ADB 连接、root 权限、硬件环境和存储情况；有检查失败时，先按提示处理。
 
-For a release, update `VERSION`, run the checks and build, commit the changes, and tag that commit with the same `v`-prefixed number (for example `v1.0.1`). Then distribute the generated archive and its checksum. `make package-android` will not overwrite an existing version; `scripts/package-android.sh --force` is available for an intentional local rebuild.
+### 3. 安装或升级
 
-`make clean test` builds and runs host-side state, protocol-vector, and loopback UDP tests. It requires a C++20 compiler and host OpenSSL development headers/library; nlohmann/json 3.11.3 is vendored under `third_party/`.
+Linux：
 
-`make android` builds the ARMv7 service when `ANDROID_NDK_HOME`, `OPENSSL_SOURCE`, and `MDNS_LIBRARY` are set. Use Android NDK r30, an OpenSSL 3.5.9 source tree, and a copy of the target panel's `/system/lib/libmdnssd.so`. Initialize the pinned HomeKit ADK submodule before building. The build applies the tracked short-nonce compatibility patch in a temporary overlay, leaving the upstream submodule unchanged. The resulting binary targets Android API 25 / `armeabi-v7a`; it statically links OpenSSL and the C++ runtime. Build and package once for each software release and hardware profile, then use that same archive for every compatible household. A household's key, gateway address, and device list are read from its own panel at runtime; they are never compiled into the binary.
+    ./install.sh 192.168.5.23
 
-For either a first install or an update, the installer adopts the local vendor SDK data automatically. The AES key stays on the panel; the installer does not copy household credentials to the computer or write them into a release archive. The panel must already have the vendor app configured and connected to its IHG2 gateway. The release archive lives on a Windows or Linux maintenance computer and needs Android platform-tools (`adb`). First-time ADB debugging and host authorization must already be enabled on the panel; the installer cannot turn those on remotely.
+Windows 命令提示符或 PowerShell：
 
-```sh
-scripts/deploy-android.sh 192.168.5.23
-```
+    .\install.cmd 192.168.5.23
 
-The IP is an example. The installer automatically connects to ADB TCP port `1379`; supply `192.168.5.23:PORT` if it differs. If exactly one ADB device is already connected over USB or TCP, omit the target. From a release bundle, Linux uses `./install.sh 192.168.5.23`; Windows uses `install.cmd 192.168.5.23`.
+中控屏的 ADB 端口默认为 1379。已有且仅有一台 ADB 设备在线时，可以省略 IP。首次安装和后续升级使用同一条命令；升级会保留 Apple 家庭配对数据。成功时，安装程序会确认 HomeKit 服务已启动。
 
-This discovers the gateway MAC and AES key from the vendor app's private SDK data, resolves the gateway IP from the panel's neighbor table, and builds the HomeKit inventory from the SDK device list. UDP port `80`, protocol device ID `1`, device type `0x274a`, HomeKit name, and HomeKit port `53760` use the observed RK3288/IHG2 defaults. The bridge keeps its pairing store on the panel. Add it to Apple Home once using the setup code in `config/pairing-code.txt`.
+### 4. 首次添加到 Apple 家庭
 
-To check an installed panel from the deployment computer, run:
+安装后运行诊断命令，取得配对码：
 
-```sh
-scripts/deploy-android.sh 192.168.5.23 --doctor
-```
+Linux：
 
-From a release bundle, Linux uses `./install.sh 192.168.5.23 --doctor`; Windows uses `install.cmd 192.168.5.23 -Doctor`. Both commands connect over ADB when given the panel IP.
+    ./install.sh 192.168.5.23 --doctor
 
-Or run `/data/local/ihg2-arm-native/ihg2-arm-bridge --doctor` as root on the panel. Doctor reports SDK access, inventory count, gateway heartbeat, HomeKit TCP listener, mDNS listener, the boot hook's SELinux execution label, and pairing-store permissions. It hides gateway keys, MAC/IP addresses, and device names. Once all checks pass, it prints the protected HomeKit setup code when available. Its only network probe is one gateway heartbeat; it sends no device-control command.
+Windows：
 
-The same install command updates an existing panel and preserves its Apple Home pairing. The installer removes obsolete local gateway config files after the new automatic service is listening. Gateway credentials and accessory inventory continue to be read automatically from the panel.
+    .\install.cmd 192.168.5.23 -Doctor
 
-The lock Wi-Fi sensor is configured separately at runtime on each panel; its IP and MAC are never compiled into the binary or included in a release. After installing, run `./install.sh PANEL_IP --configure-lock LOCK_IP LOCK_MAC` (Windows: `install.cmd PANEL_IP -ConfigureLock -LockIp LOCK_IP -LockMac LOCK_MAC`). The root-only file `/data/local/ihg2-arm-native/config/lock-sensor.conf` stores those values with mode `0600`. The service rereads it while running, so a changed lock IP can be applied with the same command and does not require rebuilding or restarting. It sends a single ARP probe to the configured IP and accepts only the configured MAC; it never scans the subnet. The sensor means the lock is reachable on the local network, not that it has been unlocked. The panel and lock must share a directly connected subnet.
+健康检查全部通过后，命令会显示 HomeKit 配对码。在 iPhone 的“家庭”App 中选择“添加配件”，按提示输入配对码。升级已有安装时无需重新配对。
 
-To build a portable release archive:
+## 遇到问题时
 
-```sh
-ANDROID_NDK_HOME=/path/to/android-ndk-r30 \
-OPENSSL_SOURCE=/path/to/openssl-3.5.9 \
-MDNS_LIBRARY=/path/to/panel-libmdnssd.so \
-make package-android
-```
+安装和预检的完整输出会保存在发布包目录下的 logs 文件夹中：
 
-On this build PC, `~/3rd/build-ihg2-arm-native.sh` supplies the local toolchain paths and runs the same versioned package build. A deployed bridge reports its version with `ihg2-arm-bridge --version` or as the first line of `--doctor` output.
+- install-*.log：安装、ADB 传输、面板返回信息、失败回滚结果和退出码。
+- preflight-*.log：安装前检查结果和退出码。
 
-Extract the archive on the install computer, optionally run `./preflight.sh 192.168.5.23` on Linux or `preflight.ps1 192.168.5.23` on Windows, then run the matching install command. The archive contains no gateway key, owner inventory, HomeKit pairing data, or current-home configuration. The installer checks the ARM/API/mDNS prerequisites and SDK auto-discovery before stopping a service, preserves existing Apple Home pairing data on updates, removes obsolete local manual config files, refuses to replace an unrelated recovery hook, and automatically restores the previous executable, version, and supervisor if the new service fails its HomeKit listener check.
+请先查看最新日志，再把日志提供给维护人员。日志可能包含家庭网络信息，应按家庭数据妥善保管。Doctor 会显示配对码，因此它的输出不会写入日志。
 
-This portable build supports rooted RK3288-class panels running Android API 25 or newer with the 32-bit `armeabi-v7a` ABI, `/system/lib/libmdnssd.so`, and the matching `flash_recovery` init hook. Other firmware needs a separately validated boot-hook and DNS-SD adapter. The installer verifies that the automatic HomeKit TCP listener on port `53760` is live before it reports success. The gateway's local UDP source port is ephemeral. After installation, runtime traffic is only between the panel, the gateway, and Apple Home on the LAN; there is no runtime dependency on the development server, Home Assistant, MQTT, Homebridge, or cloud APIs.
+## 详细资料
+
+- [部署、升级与故障诊断](DEPLOYMENT.md)
+- [自动读取的数据与隐私说明](AUTO-ADOPTION.md)

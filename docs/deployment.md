@@ -1,95 +1,113 @@
-# Android target deployment
+# 中控屏部署与维护手册
 
-The release bundle targets a rooted RK3288-class panel with Android API 25 or newer, 32-bit `armeabi-v7a`, `/system/lib/libmdnssd.so`, and an init service that launches `/system/bin/install-recovery.sh` as `flash_recovery`. It is not a generic installer for arbitrary Android devices. The installer checks these prerequisites and refuses to replace an unrelated recovery hook.
+本文面向负责部署和维护 IHG2 ARM 本地桥的人员。普通安装请先看发布包中的 README.md；这里记录完整的兼容条件、检查命令、升级回滚和故障定位方法。
 
-Build the ARM service, then package it without household credentials:
+## 支持范围
 
-```sh
-ANDROID_NDK_HOME=/path/to/android-ndk-r30 \
-OPENSSL_SOURCE=/path/to/openssl-3.5.9 \
-MDNS_LIBRARY=/path/to/panel-libmdnssd.so \
-make android
+发布包面向已验证的 RK3288 同类中控屏，要求 Android API 25 或更新版本、32 位 armeabi-v7a、root 权限、系统 DNS-SD 库 /system/lib/libmdnssd.so，以及由 flash_recovery 服务启动的预期启动钩子。它不是通用 Android 安装器。设备不符合这些条件时，安装器会停止，不会替换不认识的启动脚本。
 
-ANDROID_NDK_HOME=/path/to/android-ndk-r30 \
-OPENSSL_SOURCE=/path/to/openssl-3.5.9 \
-MDNS_LIBRARY=/path/to/panel-libmdnssd.so \
-make package-android
-```
+中控屏还须安装并配置厂商“全屋智控”应用，且应用已连接网关并同步设备清单。家庭私有数据由屏端程序运行时读取；自动读取来源和边界见 AUTO-ADOPTION.md。
 
-`VERSION` is the release source of truth. Increase it for each software release; the package name includes `-vMAJOR.MINOR.PATCH`, and a matching `.sha256` file is created beside it. The package target refuses to replace an existing version. The bridge prints its version with `--version` and at the start of `--doctor`; the installer checks that the bundle's `VERSION` matches the executable before deployment.
+发布包包括 ARM 可执行文件、Windows 和 Linux 部署入口、面板端安装脚本、预检脚本、服务监管脚本及第三方许可。包中不含网关密钥、家庭设备清单、HomeKit 配对数据库或每户配置。维护电脑需要 Android Platform Tools（adb），不需要 NDK 或 C++ 构建环境。兼容的中控屏型号使用同一份发布包。
 
-Build and package once for each software release and compatible hardware profile, then copy the same archive to a Windows or Linux maintenance computer at each household. The archive includes the stripped ARM executable, Windows and Linux install/doctor entry points, shared device-side scripts, the supervisor, boot hook, and third-party licenses. It contains no household data or generic manual-config examples. The computer needs Android platform-tools (`adb`); it does not need the Android NDK or a C++ build environment.
+## 首次连接要求
 
-The first connection still requires ADB debugging to be enabled on the panel and the computer's ADB key to be authorized. The installer cannot enable ADB remotely. Once the panel is reachable over the LAN, pass its IP to the installer; this panel profile defaults to ADB TCP port `1379`, and an explicit port can be supplied when it differs. The installer runs `adb connect` itself. If ADB is already connected over USB or TCP, omit the target only when exactly one device is online.
+中控屏必须已经开启 ADB 调试，并授权当前维护电脑。安装器无法远程开启调试或完成首次授权。屏幕接入局域网后，安装器会自动连接它；本设备配置的 ADB TCP 端口默认为 1379，也可显式指定其他端口。
 
-On Linux, install a fresh supported panel or update an existing one:
+如果 ADB 已通过 USB 或 TCP 连接，只有在 adb devices 中恰好有一台在线设备时，才可省略目标地址。Windows 命令提示符、PowerShell 和 Linux 均可使用同一个发布包。
 
-```sh
-./install.sh 192.168.5.23
-```
+## 安装前检查
 
-The IP above is an example; the script connects to `192.168.5.23:1379`. An explicit TCP port or an already-connected ADB serial is also accepted. To use the only device already listed by `adb devices`, omit the target. On Windows, extract the same archive and run `install.cmd` from Command Prompt or PowerShell:
+建议先运行预检。它会显示面板 ABI、Android API、可用内存、存储空间、启动钩子，以及运行中的桥接服务内存信息；它不会安装或重启桥接服务。
 
-```powershell
-.\install.cmd 192.168.5.23
-```
+Linux：
 
-`install.ps1` can be run directly from PowerShell when script execution is permitted.
+    ./preflight.sh 192.168.5.23
 
-Each installation run saves its complete host-side output under `logs/` beside the installer, with a unique `install-*.log` filename. This includes ADB transfer output, panel-side installation messages, errors, rollback results, and the final exit code. Preflight runs save separate `preflight-*.log` files in the same directory. Linux log files are restricted to the current user. `--doctor` output is intentionally not saved because a healthy result includes the HomeKit pairing code. Treat these logs as household data and review them before sharing.
+Windows PowerShell：
 
-The native service reads the vendor app's private SDK JSON databases on the panel. It extracts only the gateway AES key, gateway MAC, and accessory inventory needed by the bridge. The key remains on the panel in the vendor app's existing protected storage; it is neither printed nor copied to the install computer. The gateway IP is resolved by matching that MAC in `/proc/net/arp` after the panel SDK has communicated with the gateway. The inventory converter uses the panel's logical channel groups and has been checked against the current 31-accessory installation.
+    .\preflight.ps1 192.168.5.23
 
-The automatic mode is supported on rooted RK3288 panels with the same vendor app package and SDK file layout, Android API 25 or newer, 32-bit `armeabi-v7a`, `/system/lib/libmdnssd.so`, and the expected init hook. It uses the observed IHG2 protocol constants: gateway UDP port `80`, protocol device ID `1`, and device type `0x274a`. HomeKit defaults to `IHG2 Local Bridge` on TCP port `53760`; pairing identity and setup code are generated and stored on the panel. The vendor app must already be provisioned and have a synchronized device list. If the gateway is not yet in the panel's neighbor table, the installer stops before replacing the running service; open the vendor app and retry after it connects.
+将示例 IP 替换成中控屏地址。也可以传入带端口的地址，例如 192.168.5.23:1379；若该屏使用其他端口，请填写实际端口。预检日志保存在发布包旁的 logs/preflight-*.log。
 
-Run the deployment diagnostic from the install computer without changing the service:
+## 安装或升级
 
-```sh
-./install.sh 192.168.5.23 --doctor
-```
+Linux：
 
-On Windows:
+    ./install.sh 192.168.5.23
 
-```powershell
-.\install.cmd 192.168.5.23 -Doctor
-```
+Windows 命令提示符或 PowerShell：
 
-The deployed binary also supports `--doctor` when run as root on the panel. It checks private SDK data, the supported accessory count, gateway neighbor resolution and heartbeat response, HomeKit TCP and mDNS listeners, the boot hook's SELinux execution label, and pairing-store permissions. It hides gateway credentials and household device identifiers. When all checks pass, it prints the protected HomeKit setup code if the code file is present and valid. Its network test sends one heartbeat and no device-control command.
+    .\install.cmd 192.168.5.23
 
-Before installing, the optional host-side preflight reports panel ABI, Android API, available memory, storage, and boot-hook information. When the bridge is running, it also reports the bridge and log-writer RSS and each process's peak RSS since startup:
+也可以在 PowerShell 中直接运行 install.ps1。目标可以是中控屏 IP、带端口的 IP 或 ADB 序列号。省略目标时，系统要求只有一台已连接的设备。
 
-```sh
-./preflight.sh 192.168.5.23
-```
+首次安装和升级使用同一命令。成功时，安装器会确认 HomeKit TCP 端口 53760 已稳定监听。升级会保留 Apple 家庭配对身份，不需要重新添加配件。
 
-On Windows:
+### 部署电脑上的日志
 
-```powershell
-.\preflight.ps1 192.168.5.23
-```
+每次正常安装都会在发布包旁的 logs 目录生成唯一的 install-*.log；预检生成独立的 preflight-*.log。日志包含 ADB 连接和传输输出、面板安装信息、错误、回滚结果及最终退出码。Linux 下日志目录权限为 0700、日志文件为 0600；Windows 使用当前目录继承的访问权限。
 
-Both entry points can omit the target when exactly one ADB device is already connected. They never copy the household AES key or accessory inventory to the computer. The same install command handles first installation and updates, and preserves Apple Home pairing data.
+Doctor 会显示 HomeKit 配对码，因此它的输出不会保存到安装日志。配置门锁传感器也不会建立安装日志。日志按次累积，不会自动删除；分享前请检查内容并妥善保护。
 
-The installer stages only the generic executable and service scripts under `/data/local/tmp`. It verifies root/ABI/API/mDNS/init support and panel SDK auto-discovery before stopping the running bridge, atomically replaces the executable, and starts the init-managed supervisor. It preserves `/data/local/ihg2-arm-native/.hap_store` and the pairing PIN, and removes obsolete `bridge.json`, `gateway.key`, and inventory files only after the new automatic bridge is listening on TCP `53760` for five consecutive checks. Before replacing files, it saves the previous executable, version, and supervisor. If any later install step fails, it stops the attempted service, restores those files and the original boot-hook state, and restarts the previous service only if it was running before the update. On a failed first install with no previous executable, it stops the service, removes the failed service files, and removes the IHG2 boot hook so Android does not keep launching a broken installation. Pairing data is preserved in either case.
+## 诊断已安装的中控屏
 
-The lock Wi-Fi presence sensor uses a separate per-home runtime config. After installing the bridge, write the lock's current IP and Wi-Fi MAC from the maintenance computer:
+从维护电脑运行：
 
-```sh
-./install.sh PANEL_IP --configure-lock 192.168.1.100 02:00:00:00:00:01
-```
+Linux：
 
-Windows uses `install.cmd PANEL_IP -ConfigureLock -LockIp 192.168.1.100 -LockMac 02:00:00:00:00:01`. Replace both values with that home's lock details. The command stores them in `/data/local/ihg2-arm-native/config/lock-sensor.conf`, owned by root with mode `0600`; no household values enter the program or release archive. The running service rereads the file every five seconds, so rerun the command if the lock's IP changes. No rebuild or service restart is needed. The sensor probes only the configured IP with ARP and accepts a reply only when its MAC matches; it never scans the subnet. It reports local network reachability, which can trigger Apple Home automations but does not confirm an unlock. The panel and lock must share a directly connected subnet.
+    ./install.sh 192.168.5.23 --doctor
 
-On first pairing, the bridge generates a random HomeKit setup code and stores it root-only at `/data/local/ihg2-arm-native/config/pairing-code.txt`. A healthy `--doctor` run displays the code; it can also be read directly when pairing is needed:
+Windows：
 
-```sh
-adb -s DEVICE shell su 0 cat /data/local/ihg2-arm-native/config/pairing-code.txt
-```
+    .\install.cmd 192.168.5.23 -Doctor
 
-Each start reads the current key and device list from that panel's vendor SDK and resolves its gateway address locally. The lock sensor's separate private runtime file is optional and manually configured as described above. Existing obsolete gateway config files are ignored by the new binary and removed after a successful update.
+Doctor 检查厂商 SDK 数据、配件数量、网关地址和心跳响应、HomeKit TCP 与 mDNS 监听、启动钩子的 SELinux 标签以及配对数据目录权限。它会隐藏网关密钥、家庭设备名称和标识；全部检查通过后，会显示受保护的 HomeKit 配对码。它只发送一个网关心跳，不发送任何开关、窗帘或空调控制指令。
 
-The installer briefly remounts `/system` read-write to install or repair the boot hook's SELinux label, then restores read-only. It verifies the `install_recovery_exec` label before starting the Android init service.
+也可以在屏端以 root 身份运行：
 
-The supervisor sends bridge stdout and stderr through the built-in log writer. `bridge.log` and `bridge.log.1` are each capped at 5 MiB, so their combined size stays at or below 10 MiB. Rotation happens while the bridge is running and does not restart the HomeKit service. After quick bridge exits, restart delays grow from 3 to 6, 12, 24, 48, and 60 seconds; a run lasting at least a minute resets the delay. The bridge creates `.bridge-log.pipe` through the system API, so installation does not depend on a shell `mkfifo` command; the temporary FIFO is removed when the service stops. If storage rejects log writes, the writer drains and discards further output so a full disk cannot block the bridge.
+    /data/local/ihg2-arm-native/ihg2-arm-bridge --doctor
 
-The panel links HomeKit DNS-SD through its firmware's `/system/lib/libmdnssd.so`; OpenSSL and the C++ runtime are statically linked. HAP TCP (default 53760), gateway UDP (default 80), and the bridge's ephemeral UDP source port are separate. The gateway protocol and curtain conversion logic have offline tests; the current device deployment additionally verifies that the HomeKit listener comes up. A physical movement is not triggered by the installer.
+首次配对时若需要单独读取配对码：
+
+    adb -s DEVICE shell su 0 cat /data/local/ihg2-arm-native/config/pairing-code.txt
+
+配对码属于家庭凭据，请勿把包含该码的 Doctor 输出公开分享。
+
+## 首次添加到 Apple 家庭
+
+安装后运行 Doctor，确认健康检查通过并取得配对码。在 iPhone 的“家庭”App 中选择“添加配件”，按提示输入该码。配对身份和设置码保存在中控屏上；升级会保留现有配对。重新安装同一发布包不等于重新配对。
+
+## 可选：配置门锁 Wi-Fi 在线传感器
+
+门锁传感器按每户单独配置。它只报告门锁是否能通过指定 IP 和 MAC 在本地网络上被探测到，不代表门锁已解锁。中控屏和门锁必须位于可直接 ARP 通信的同一网段。程序不会扫描整个网段，只探测配置的 IP，并校验返回 MAC。
+
+Linux：
+
+    ./install.sh PANEL_IP --configure-lock 192.168.1.100 02:00:00:00:00:01
+
+Windows 命令提示符或 PowerShell：
+
+    .\install.cmd PANEL_IP -ConfigureLock -LockIp 192.168.1.100 -LockMac 02:00:00:00:00:01
+
+将地址和 MAC 换成该户门锁的实际值。配置保存在屏端 /data/local/ihg2-arm-native/config/lock-sensor.conf，归 root 所有且权限为 0600，不写入程序或发布包。服务每五秒重新读取配置；门锁 IP 变化时重新执行命令即可，不需重编译或重启服务。该配置命令不会创建安装日志。
+
+## 更新失败时的回滚
+
+安装器先把通用程序和脚本暂存到 /data/local/tmp，再检查 root、CPU ABI、Android API、mDNS 库、启动服务和厂商 SDK 自动读取情况。检查通过后才会停止旧服务并替换程序。
+
+安装器在替换前保存旧程序、版本和服务监管脚本。新服务未能稳定监听 HomeKit TCP 53760 时，安装器会停止失败版本并恢复此前文件与启动钩子；如果旧版本原先正在运行，则尝试重新启动。首次安装失败时会移除失败服务文件和本桥的启动钩子。Apple 家庭配对数据在升级和回滚时都会保留。
+
+部署过程中安装器会短暂将 /system 重新挂载为可写，以安装或修复启动钩子的 SELinux 标签，随后恢复只读。安装器会检查该标签再启动服务。
+
+## 中控屏上的服务日志
+
+服务监管程序把桥接服务的标准输出和错误输出交给内置日志写入器。中控屏上的 bridge.log 和 bridge.log.1 各自最多 5 MiB，总计不超过 10 MiB；运行时自动轮换，不会重启 HomeKit 服务。日志写入失败时，写入器会继续读取并丢弃后续输出，避免磁盘写满后阻塞桥接服务。
+
+服务快速退出时，重启间隔依次增长为 3、6、12、24、48 和 60 秒；连续运行达到一分钟后，间隔恢复为 3 秒。桥接服务和日志写入器的进程内存信息可通过预检查看。
+
+## 网络与运行边界
+
+网关通信使用 UDP 端口 80，HomeKit 使用 TCP 端口 53760，mDNS 使用面板固件提供的 DNS-SD 服务。网关 UDP 源端口由系统动态分配。
+
+网关密钥、设备清单、配对数据库和门锁配置都留在中控屏。桥接服务运行时只需与中控屏本地 SDK、网关和 Apple 家庭控制器在局域网通信，不依赖开发服务器、Home Assistant、Homebridge 或云 API。安装过程不会触发实体设备动作。
