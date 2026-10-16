@@ -2,24 +2,38 @@
 set -euo pipefail
 
 usage() {
-    printf 'Usage: %s [adb-serial|panel-ip[:adb-port]] [--doctor]\n' "$0" >&2
-    printf '       %s --doctor   (select the only connected ADB device)\n' "$0" >&2
+    printf 'Usage: %s [adb-serial|panel-ip[:adb-port]] [--doctor|--configure-lock IP MAC]\n' "$0" >&2
+    printf '       %s --doctor|--configure-lock IP MAC   (select the only connected ADB device)\n' "$0" >&2
 }
 
 target=
-doctor=0
-case $# in
-    0) ;;
-    1)
-        if [[ "$1" == --doctor ]]; then doctor=1; else target=$1; fi
-        ;;
-    2)
-        target=$1
-        [[ "$2" == --doctor ]] || { usage; exit 2; }
-        doctor=1
-        ;;
-    *) usage; exit 2 ;;
-esac
+mode=install
+lock_ip=
+lock_mac=
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --doctor)
+            [[ "$mode" == install ]] || { usage; exit 2; }
+            mode=doctor
+            shift
+            ;;
+        --configure-lock)
+            [[ "$mode" == install ]] || { usage; exit 2; }
+            mode=configure
+            shift
+            [[ $# -ge 2 && "$1" != -* && "$2" != -* ]] || { usage; exit 2; }
+            lock_ip=$1
+            lock_mac=$2
+            shift 2
+            ;;
+        -*) usage; exit 2 ;;
+        *)
+            [[ -z "$target" ]] || { usage; exit 2; }
+            target=$1
+            shift
+            ;;
+    esac
+done
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -52,8 +66,15 @@ case "$root_identity" in
     *) printf 'ADB root access failed: %s\n' "$root_identity" >&2; exit 1 ;;
 esac
 
-if [[ "$doctor" -eq 1 ]]; then
+if [[ "$mode" == doctor ]]; then
     exec "$adb_bin" -s "$target" shell su 0 /data/local/ihg2-arm-native/ihg2-arm-bridge --doctor
+fi
+if [[ "$mode" == configure ]]; then
+    if [[ ! "$lock_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ || ! "$lock_mac" =~ ^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$ ]]; then
+        printf 'Lock configuration expects an IPv4 address and MAC AA:BB:CC:DD:EE:FF.\n' >&2
+        exit 2
+    fi
+    exec "$adb_bin" -s "$target" shell su 0 /data/local/ihg2-arm-native/ihg2-arm-bridge --configure-lock "$lock_ip" "$lock_mac"
 fi
 
 if [[ -x "$script_dir/ihg2-arm-bridge" ]]; then

@@ -47,13 +47,27 @@ int main() {
              {"sdid", "target-5"},
              {"devname", "Leak sensor"},
              {"spid", "sensor-27a70000"}},
+            {{"category", "remote_control_panel"},
+             {"did", "parent-6"},
+             {"sdid", "target-6"},
+             {"devname", "PWR3 panel"},
+             {"vgroups", Json::array({{{"category", "VS"},
+                                       {"param", "tp_vspwr"},
+                                       {"groupid", "radar-channel"},
+                                       {"name", "公卫雷达"},
+                                       {"extend", "{\"loadid\":\"stable-radar\"}"}}})}},
+            {{"category", "VS"},
+             {"did", "parent-7"},
+             {"sdid", "target-7"},
+             {"devname", "水浸传感器"},
+             {"spid", "water-leak-model"}},
             {{"category", "LIGHT"},
              {"did", "ignored"},
              {"sdid", "ignored"},
              {"ignoreflag", true}}});
 
     const auto inventory = inventory_from_panel_subdevices(subdevices);
-    assert(inventory.size() == 5);
+    assert(inventory.size() == 7);
     assert(inventory[0]["unique_id"] == "switch_stable-relay");
     assert(inventory[0]["name"] == "Hall relay");
     assert(inventory[0]["target_did"] == "target-1");
@@ -69,6 +83,14 @@ int main() {
     assert(inventory[3]["control_key"] == "tp_acpwr");
     assert(inventory[4]["platform"] == "binary_sensor");
     assert(inventory[4]["control_key"] == "water_detected");
+    assert(inventory[4]["sensor_type"] == "leak");
+    assert(inventory[5]["unique_id"] == "switch_stable-radar");
+    assert(inventory[5]["platform"] == "binary_sensor");
+    assert(inventory[5]["control_key"] == "radar_detected");
+    assert(inventory[5]["sensor_type"] == "occupancy");
+    assert(inventory[6]["platform"] == "binary_sensor");
+    assert(inventory[6]["control_key"] == "water_detected");
+    assert(inventory[6]["sensor_type"] == "leak");
 
     const std::string neighbors =
             "IP address HW type Flags HW address Mask Device\n"

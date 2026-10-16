@@ -7,6 +7,9 @@ extern "C" {
 int ihg2_arm_initialize(const char* config_directory);
 int ihg2_arm_panel_adoption_probe(size_t* accessory_count);
 int ihg2_arm_doctor(const char* config_directory);
+int ihg2_arm_configure_lock(const char* config_directory, const char* ipv4, const char* mac_address);
+int ihg2_arm_lock_sensor_enrolled(void);
+int ihg2_arm_lock_sensor_online(void);
 void ihg2_arm_poll(void);
 size_t ihg2_arm_device_count(void);
 uint64_t ihg2_arm_device_aid(size_t index);
@@ -16,11 +19,14 @@ uint16_t ihg2_arm_homekit_port(void);
 int ihg2_arm_device_is_light(size_t index);
 int ihg2_arm_device_is_cover(size_t index);
 int ihg2_arm_device_is_climate(size_t index);
+int ihg2_arm_device_is_binary_sensor(size_t index);
+int ihg2_arm_device_sensor_is_leak(size_t index);
 int ihg2_arm_device_can_write(size_t index);
 int ihg2_arm_device_has_brightness(size_t index);
 int ihg2_arm_device_has_color_temperature(size_t index);
 int ihg2_arm_device_has_cover_position(size_t index);
 int ihg2_arm_device_read_on(uint64_t aid);
+int ihg2_arm_device_read_sensor(uint64_t aid);
 int ihg2_arm_device_write_on(uint64_t aid, int on);
 int ihg2_arm_device_read_brightness(uint64_t aid);
 int ihg2_arm_device_write_brightness(uint64_t aid, int percent);
@@ -49,7 +55,8 @@ enum {
     IHG2_HAP_STATE_THERMOSTAT_CURRENT_STATE = 1u << 6,
     IHG2_HAP_STATE_THERMOSTAT_TARGET_STATE = 1u << 7,
     IHG2_HAP_STATE_CURRENT_TEMPERATURE = 1u << 8,
-    IHG2_HAP_STATE_TARGET_TEMPERATURE = 1u << 9
+    IHG2_HAP_STATE_TARGET_TEMPERATURE = 1u << 9,
+    IHG2_HAP_STATE_SENSOR = 1u << 10
 };
 void ihg2_hap_state_changed(size_t index, uint32_t changed_mask);
 #ifdef __cplusplus

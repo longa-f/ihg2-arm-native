@@ -1,7 +1,10 @@
 param(
     [Parameter(Position = 0)]
     [string] $Target,
-    [switch] $Doctor
+    [switch] $Doctor,
+    [switch] $ConfigureLock,
+    [string] $LockIp,
+    [string] $LockMac
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,8 +49,18 @@ if ($LASTEXITCODE -ne 0 -or (($rootIdentity -join "`n") -notmatch 'uid=0')) {
     Fail "ADB root access failed: $($rootIdentity -join ' ')"
 }
 
+if ($Doctor -and $ConfigureLock) { Fail 'Choose either -Doctor or -ConfigureLock.' }
 if ($Doctor) {
     & $script:AdbPath -s $Target shell su 0 /data/local/ihg2-arm-native/ihg2-arm-bridge --doctor
+    exit $LASTEXITCODE
+}
+if ($ConfigureLock) {
+    if ([string]::IsNullOrWhiteSpace($LockIp) -or [string]::IsNullOrWhiteSpace($LockMac) -or
+        $LockIp -notmatch '^(?:\d{1,3}\.){3}\d{1,3}$' -or
+        $LockMac -notmatch '^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$') {
+        Fail 'Lock configuration expects -LockIp IPv4 -LockMac AA:BB:CC:DD:EE:FF.'
+    }
+    & $script:AdbPath -s $Target shell su 0 /data/local/ihg2-arm-native/ihg2-arm-bridge --configure-lock $LockIp $LockMac
     exit $LASTEXITCODE
 }
 

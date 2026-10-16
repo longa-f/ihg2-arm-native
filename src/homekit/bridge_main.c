@@ -1,6 +1,7 @@
 #include "HAP.h"
 #include "HAPAccessorySetup.h"
 #include "HAPCrypto.h"
+#include "HAPRequestHandlers.h"
 #include "HAPPlatform+Init.h"
 #include "HAPPlatformAccessorySetup+Init.h"
 #include "HAPPlatformKeyValueStore+Init.h"
@@ -53,6 +54,8 @@ extern HAPError HandleTargetTemperatureRead(HAPAccessoryServerRef*, const HAPFlo
 extern HAPError HandleTargetTemperatureWrite(HAPAccessoryServerRef*, const HAPFloatCharacteristicWriteRequest*, float, void*);
 extern HAPError HandleTemperatureDisplayUnitsRead(HAPAccessoryServerRef*, const HAPUInt8CharacteristicReadRequest*, uint8_t*, void*);
 extern HAPError HandleTemperatureDisplayUnitsWrite(HAPAccessoryServerRef*, const HAPUInt8CharacteristicWriteRequest*, uint8_t, void*);
+extern HAPError HandleLockOccupancyRead(HAPAccessoryServerRef*, const HAPUInt8CharacteristicReadRequest*, uint8_t*, void*);
+extern HAPError HandleDeviceSensorRead(HAPAccessoryServerRef*, const HAPUInt8CharacteristicReadRequest*, uint8_t*, void*);
 
 static HAPPlatformKeyValueStore keyValueStore;
 static HAPPlatformAccessorySetup accessorySetup;
@@ -71,7 +74,8 @@ static HAPIPWriteContextRef writeContexts[kAttributeCapacity];
 static uint8_t scratch[kHAPIPSession_DefaultScratchBufferSize];
 static HAPAccessory bridgeAccessory;
 static HAPAccessory accessories[kMaxDevices];
-static const HAPAccessory* accessoryPointers[kMaxDevices + 1];
+static HAPAccessory lockSensorAccessory;
+static const HAPAccessory* accessoryPointers[kMaxDevices + 2];
 static const HAPService* bridgeServices[] = {
     &accessoryInformationService, &hapProtocolInformationService, &pairingService, NULL
 };
@@ -85,6 +89,9 @@ static HAPUInt32Characteristic colorTemperatureCharacteristics[kMaxDevices];
 static HAPUInt8Characteristic coverCurrentPositionCharacteristics[kMaxDevices];
 static HAPUInt8Characteristic coverTargetPositionCharacteristics[kMaxDevices];
 static HAPUInt8Characteristic coverPositionStateCharacteristics[kMaxDevices];
+static HAPDataCharacteristic sensorServiceSignatures[kMaxDevices];
+static HAPStringCharacteristic sensorNameCharacteristics[kMaxDevices];
+static HAPUInt8Characteristic sensorDetectedCharacteristics[kMaxDevices];
 static HAPDataCharacteristic thermostatServiceSignatures[kMaxDevices];
 static HAPStringCharacteristic thermostatNameCharacteristics[kMaxDevices];
 static HAPUInt8Characteristic thermostatCurrentStateCharacteristics[kMaxDevices];
@@ -97,14 +104,23 @@ static HAPService featureServices[kMaxDevices];
 enum {
     kEventOn, kEventBrightness, kEventColorTemperature, kEventCoverCurrent, kEventCoverTarget,
     kEventCoverState, kEventThermostatCurrentState, kEventThermostatTargetState,
-    kEventCurrentTemperature, kEventTargetTemperature, kNumEventCharacteristics
+    kEventCurrentTemperature, kEventTargetTemperature, kEventSensor, kNumEventCharacteristics
 };
 static const HAPCharacteristic* eventCharacteristics[kMaxDevices][kNumEventCharacteristics];
 static const HAPService* eventServices[kMaxDevices];
 static bool hapReady;
 static HAPPlatformTimerRef gatewayTimer;
+static HAPPlatformTimerRef lockSensorTimer;
+static HAPUInt8Characteristic lockOccupancyCharacteristic;
+static HAPDataCharacteristic lockSensorServiceSignature;
+static const HAPCharacteristic* lockSensorCharacteristics[3];
+static HAPService lockSensorService;
+static const HAPService* lockSensorAccessoryServices[3];
+static uint8_t lastLockSensorValue;
 
-#define kAccessorySchemaVersion "5\n"
+#define kLockSensorAID UINT64_C(0x4C4F434B)
+
+#define kAccessorySchemaVersion "8\n"
 #define kAccessorySchemaMarker "config/homekit-schema-version"
 
 static bool AccessorySchemaNeedsUpdate(void) {
@@ -214,13 +230,26 @@ static void GatewayTimer(HAPPlatformTimerRef timer, void* context) {
     if (HAPPlatformTimerRegister(&gatewayTimer, deadline, GatewayTimer, NULL)) HAPFatalError();
 }
 
+static void LockSensorTimer(HAPPlatformTimerRef timer, void* context) {
+    (void)timer; (void)context;
+    const uint8_t value = ihg2_arm_lock_sensor_online() ? 1 : 0;
+    if (hapReady && value != lastLockSensorValue) {
+        lastLockSensorValue = value;
+        HAPAccessoryServerRaiseEvent(&accessoryServer,
+                                     (const HAPCharacteristic*) &lockOccupancyCharacteristic,
+                                     &lockSensorService, &lockSensorAccessory);
+    }
+    if (HAPPlatformTimerRegister(&lockSensorTimer, HAPPlatformClockGetCurrent() + 1,
+                                 LockSensorTimer, NULL)) HAPFatalError();
+}
+
 void ihg2_hap_state_changed(size_t index, uint32_t changedMask) {
     if (!hapReady || index >= ihg2_arm_device_count()) return;
     static const uint32_t eventMasks[kNumEventCharacteristics] = {
         IHG2_HAP_STATE_ON, IHG2_HAP_STATE_BRIGHTNESS, IHG2_HAP_STATE_COLOR_TEMPERATURE,
         IHG2_HAP_STATE_COVER_CURRENT, IHG2_HAP_STATE_COVER_TARGET, IHG2_HAP_STATE_COVER_POSITION_STATE,
         IHG2_HAP_STATE_THERMOSTAT_CURRENT_STATE, IHG2_HAP_STATE_THERMOSTAT_TARGET_STATE,
-        IHG2_HAP_STATE_CURRENT_TEMPERATURE, IHG2_HAP_STATE_TARGET_TEMPERATURE
+        IHG2_HAP_STATE_CURRENT_TEMPERATURE, IHG2_HAP_STATE_TARGET_TEMPERATURE, IHG2_HAP_STATE_SENSOR
     };
     for (size_t event = 0; event < kNumEventCharacteristics; event++) {
         if ((changedMask & eventMasks[event]) && eventCharacteristics[index][event]) {
@@ -255,8 +284,10 @@ int main(int argc, char* argv[]) {
         puts(kBridgeVersionText);
         return ihg2_arm_doctor("/data/local/ihg2-arm-native");
     }
+    if (argc == 4 && strcmp(argv[1], "--configure-lock") == 0)
+        return ihg2_arm_configure_lock("/data/local/ihg2-arm-native", argv[2], argv[3]);
     if (argc != 1) {
-        fprintf(stderr, "Usage: ihg2-arm-bridge [--version|--doctor|--check-panel-sdk|--build-mode]\n");
+        fprintf(stderr, "Usage: ihg2-arm-bridge [--version|--doctor|--check-panel-sdk|--build-mode|--configure-lock IP MAC]\n");
         return 2;
     }
     if (ihg2_arm_initialize("." ) != 1) {
@@ -313,6 +344,8 @@ int main(int argc, char* argv[]) {
         const bool light = ihg2_arm_device_is_light(i) != 0;
         const bool cover = ihg2_arm_device_is_cover(i) != 0 && ihg2_arm_device_has_cover_position(i) != 0;
         const bool climate = ihg2_arm_device_is_climate(i) != 0;
+        const bool binarySensor = ihg2_arm_device_is_binary_sensor(i) != 0;
+        const bool leakSensor = binarySensor && ihg2_arm_device_sensor_is_leak(i) != 0;
         const bool canWrite = ihg2_arm_device_can_write(i) != 0;
         const HAPService* mainService = NULL;
         if (light) {
@@ -455,6 +488,37 @@ int main(int argc, char* argv[]) {
             eventCharacteristics[i][kEventTargetTemperature] = (const HAPCharacteristic*) &targetTemperatureCharacteristics[i];
             mainService = &featureServices[i];
             eventServices[i] = mainService;
+        } else if (binarySensor) {
+            // Use fresh IIDs when changing a previously exposed Switch service to a sensor.
+            // Controllers may cache the old On characteristic by IID even after the service type changes.
+            sensorServiceSignatures[i] = *(const HAPDataCharacteristic*) lightBulbService.characteristics[0];
+            sensorServiceSignatures[i].iid = 0x0051;
+            sensorNameCharacteristics[i] = *(const HAPStringCharacteristic*) lightBulbService.characteristics[1];
+            sensorNameCharacteristics[i].iid = 0x0052;
+            featureCharacteristics[i][0] = (const HAPCharacteristic*) &sensorServiceSignatures[i];
+            featureCharacteristics[i][1] = (const HAPCharacteristic*) &sensorNameCharacteristics[i];
+            sensorDetectedCharacteristics[i] = MakeUInt8Characteristic(
+                    0x0053,
+                    leakSensor ? &kHAPCharacteristicType_LeakDetected : &kHAPCharacteristicType_OccupancyDetected,
+                    leakSensor ? kHAPCharacteristicDebugDescription_LeakDetected
+                               : kHAPCharacteristicDebugDescription_OccupancyDetected,
+                    false, HandleDeviceSensorRead, NULL);
+            sensorDetectedCharacteristics[i].units = kHAPCharacteristicUnits_None;
+            sensorDetectedCharacteristics[i].constraints.maximumValue = 1;
+            featureCharacteristics[i][2] = (const HAPCharacteristic*) &sensorDetectedCharacteristics[i];
+            featureCharacteristics[i][3] = NULL;
+            featureServices[i] = (HAPService) {
+                .iid = 0x0050,
+                .serviceType = leakSensor ? &kHAPServiceType_LeakSensor : &kHAPServiceType_OccupancySensor,
+                .debugDescription = leakSensor ? kHAPServiceDebugDescription_LeakSensor
+                                               : kHAPServiceDebugDescription_OccupancySensor,
+                .name = leakSensor ? "Leak Sensor" : "Occupancy Sensor",
+                .properties = { .primaryService = true, .hidden = false, .ble = { .supportsConfiguration = false } },
+                .linkedServices = NULL, .characteristics = featureCharacteristics[i]
+            };
+            eventCharacteristics[i][kEventSensor] = (const HAPCharacteristic*) &sensorDetectedCharacteristics[i];
+            mainService = &featureServices[i];
+            eventServices[i] = mainService;
         } else {
             switchServices[i] = ihg2SwitchService;
             switchOnCharacteristics[i] = *(const HAPBoolCharacteristic*)ihg2SwitchService.characteristics[1];
@@ -476,14 +540,67 @@ int main(int argc, char* argv[]) {
         accessories[i] = (HAPAccessory){
             .aid = ihg2_arm_device_aid(i), .category = kHAPAccessoryCategory_BridgedAccessory,
             .name = ihg2_arm_device_name(i), .manufacturer = "IHG2",
-            .model = cover ? "Gateway Window Covering" : (climate ? "Gateway Thermostat" : (light ? "Gateway Light" : "Gateway Switch")),
+            .model = cover ? "Gateway Window Covering" :
+                     (climate ? "Gateway Thermostat" :
+                      (light ? "Gateway Light" :
+                       (binarySensor ? (leakSensor ? "Gateway Leak Sensor" : "Gateway Occupancy Sensor")
+                                     : "Gateway Switch"))),
             .serialNumber = ihg2_arm_device_name(i), .firmwareVersion = IHG2_ARM_VERSION,
             .hardwareVersion = "1.0.0", .services = accessoryServices[i],
             .callbacks = { .identify = IdentifyAccessory }
         };
         accessoryPointers[i] = &accessories[i];
+        if (ihg2_arm_device_aid(i) == kLockSensorAID) {
+            fprintf(stderr, "ihg2-arm: HomeKit accessory identifier collision\n");
+            return 2;
+        }
     }
-    accessoryPointers[count] = NULL;
+    lockSensorServiceSignature = (HAPDataCharacteristic) {
+        .format = kHAPCharacteristicFormat_Data, .iid = 0x0031,
+        .characteristicType = &kHAPCharacteristicType_ServiceSignature,
+        .debugDescription = kHAPCharacteristicDebugDescription_ServiceSignature,
+        .manufacturerDescription = NULL,
+        .properties = { .readable = true, .writable = false, .supportsEventNotification = false,
+                        .hidden = false, .requiresTimedWrite = false, .supportsAuthorizationData = false,
+                        .ip = { .controlPoint = true },
+                        .ble = { .supportsBroadcastNotification = false, .supportsDisconnectedNotification = false,
+                                 .readableWithoutSecurity = false, .writableWithoutSecurity = false } },
+        .constraints = { .maxLength = 2097152 },
+        .callbacks = { .handleRead = HAPHandleServiceSignatureRead, .handleWrite = NULL }
+    };
+    lockOccupancyCharacteristic = (HAPUInt8Characteristic) {
+        .format = kHAPCharacteristicFormat_UInt8, .iid = 0x0033,
+        .characteristicType = &kHAPCharacteristicType_OccupancyDetected,
+        .debugDescription = kHAPCharacteristicDebugDescription_OccupancyDetected,
+        .manufacturerDescription = NULL,
+        .properties = NumericEventProperties(false), .units = kHAPCharacteristicUnits_None,
+        .constraints = { .minimumValue = 0, .maximumValue = 1, .stepValue = 1,
+                         .validValues = NULL, .validValuesRanges = NULL },
+        .callbacks = { .handleRead = HandleLockOccupancyRead, .handleWrite = NULL }
+    };
+    lockSensorCharacteristics[0] = (const HAPCharacteristic*) &lockSensorServiceSignature;
+    lockSensorCharacteristics[1] = (const HAPCharacteristic*) &lockOccupancyCharacteristic;
+    lockSensorCharacteristics[2] = NULL;
+    lockSensorService = (HAPService) {
+        .iid = 0x0030, .serviceType = &kHAPServiceType_OccupancySensor,
+        .debugDescription = kHAPServiceDebugDescription_OccupancySensor,
+        .name = "Occupancy Sensor",
+        .properties = { .primaryService = true, .hidden = false, .ble = { .supportsConfiguration = false } },
+        .linkedServices = NULL, .characteristics = lockSensorCharacteristics
+    };
+    lockSensorAccessoryServices[0] = &accessoryInformationService;
+    lockSensorAccessoryServices[1] = &lockSensorService;
+    lockSensorAccessoryServices[2] = NULL;
+    lockSensorAccessory = (HAPAccessory) {
+        .aid = kLockSensorAID, .category = kHAPAccessoryCategory_BridgedAccessory,
+        .name = "门锁网络活动", .manufacturer = "IHG2",
+        .model = "Wi-Fi Presence Sensor", .serialNumber = "IHG2-LOCK-WIFI-01",
+        .firmwareVersion = IHG2_ARM_VERSION, .hardwareVersion = "1.0.0",
+        .services = lockSensorAccessoryServices,
+        .callbacks = { .identify = IdentifyAccessory }
+    };
+    accessoryPointers[count] = &lockSensorAccessory;
+    accessoryPointers[count + 1] = NULL;
     HAPAccessoryServerCreate(&accessoryServer, &serverOptions, &hapPlatform, &serverCallbacks, NULL);
     const bool configurationChanged = AccessorySchemaNeedsUpdate();
     HAPAccessoryServerStartBridge(&accessoryServer, &bridgeAccessory, accessoryPointers, configurationChanged);
@@ -492,7 +609,10 @@ int main(int argc, char* argv[]) {
         return 2;
     }
     hapReady = true;
+    lastLockSensorValue = ihg2_arm_lock_sensor_online() ? 1 : 0;
     if (HAPPlatformTimerRegister(&gatewayTimer, HAPPlatformClockGetCurrent() + 10, GatewayTimer, NULL)) HAPFatalError();
+    if (HAPPlatformTimerRegister(&lockSensorTimer, HAPPlatformClockGetCurrent() + 1,
+                                 LockSensorTimer, NULL)) HAPFatalError();
     HAPPlatformRunLoopRun();
     HAPAccessoryServerRelease(&accessoryServer);
     HAPPlatformRunLoopRelease();

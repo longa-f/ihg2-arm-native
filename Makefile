@@ -7,7 +7,7 @@ BUILD_DIR ?= build
 
 .PHONY: all test clean android package-android
 
-all: $(BUILD_DIR)/state_store_test $(BUILD_DIR)/protocol_test $(BUILD_DIR)/homekit_cover_test $(BUILD_DIR)/homekit_color_temperature_test $(BUILD_DIR)/homekit_thermostat_test $(BUILD_DIR)/panel_config_test $(BUILD_DIR)/log_writer_test
+all: $(BUILD_DIR)/state_store_test $(BUILD_DIR)/protocol_test $(BUILD_DIR)/homekit_cover_test $(BUILD_DIR)/homekit_color_temperature_test $(BUILD_DIR)/homekit_thermostat_test $(BUILD_DIR)/panel_config_test $(BUILD_DIR)/log_writer_test $(BUILD_DIR)/lock_presence_test
 
 $(BUILD_DIR):
 	mkdir -p $@
@@ -36,6 +36,9 @@ $(BUILD_DIR)/log_writer.o: src/log_writer.c include/ihg2_arm/log_writer.h | $(BU
 $(BUILD_DIR)/log_writer_test: tests/log_writer_test.cpp $(BUILD_DIR)/log_writer.o | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $^ -o $@
 
+$(BUILD_DIR)/lock_presence_test: src/lock_presence.cpp tests/lock_presence_test.cpp | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -pthread $^ -o $@
+
 test: all
 	./$(BUILD_DIR)/state_store_test
 	./$(BUILD_DIR)/protocol_test
@@ -44,6 +47,7 @@ test: all
 	./$(BUILD_DIR)/homekit_thermostat_test
 	./$(BUILD_DIR)/panel_config_test
 	./$(BUILD_DIR)/log_writer_test
+	./$(BUILD_DIR)/lock_presence_test
 
 android:
 	./scripts/build-android.sh

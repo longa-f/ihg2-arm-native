@@ -152,3 +152,19 @@ HAPError HandleTemperatureDisplayUnitsWrite(HAPAccessoryServerRef* server HAP_UN
     return ihg2_arm_device_write_temperature_display_units(request->accessory->aid, value)
             ? kHAPError_None : kHAPError_OutOfResources;
 }
+
+HAPError HandleLockOccupancyRead(HAPAccessoryServerRef* server HAP_UNUSED,
+                                 const HAPUInt8CharacteristicReadRequest* request HAP_UNUSED,
+                                 uint8_t* value,
+                                 void* context HAP_UNUSED) {
+    *value = ihg2_arm_lock_sensor_online() ? 1 : 0;
+    return kHAPError_None;
+}
+
+HAPError HandleDeviceSensorRead(HAPAccessoryServerRef* server HAP_UNUSED,
+                                const HAPUInt8CharacteristicReadRequest* request,
+                                uint8_t* value,
+                                void* context HAP_UNUSED) {
+    *value = (uint8_t) ihg2_arm_device_read_sensor(request->accessory->aid);
+    return kHAPError_None;
+}

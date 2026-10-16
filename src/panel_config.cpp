@@ -135,6 +135,21 @@ std::string upper(std::string value) {
     return value;
 }
 
+bool named_sensor(const std::string& name, const std::string& spid) {
+    const auto searchable_name = upper(name);
+    const auto searchable_spid = upper(spid);
+    return searchable_name.find("水浸") != std::string::npos ||
+           searchable_name.find("漏水") != std::string::npos ||
+           searchable_name.find("WATER") != std::string::npos ||
+           searchable_name.find("LEAK") != std::string::npos ||
+           searchable_name.find("雷达") != std::string::npos ||
+           searchable_name.find("人体") != std::string::npos ||
+           searchable_name.find("RADAR") != std::string::npos ||
+           searchable_name.find("MOTION") != std::string::npos ||
+           searchable_name.find("OCCUPANCY") != std::string::npos ||
+           (searchable_spid.size() >= 8 && searchable_spid.ends_with("27A70000"));
+}
+
 Json object_value(const Json& value) {
     if (value.is_object()) return value;
     if (value.is_string()) {
@@ -221,9 +236,12 @@ Json inventory_from_panel_subdevices(const Json& subdevices) {
             }
         }
 
+        const auto raw_category = upper(text(raw.value("category", Json{})));
+        const auto raw_name = text(raw.value("devname", Json{}));
+        const auto raw_spid = text(raw.value("spid", Json{}));
         const bool raw_fallback =
-                (upper(text(raw.value("category", Json{}))) == "LIGHT" ||
-                 upper(text(raw.value("category", Json{}))) == "SENSOR") &&
+                (raw_category == "LIGHT" || raw_category == "SENSOR" ||
+                 (raw_category == "VS" && named_sensor(raw_name, raw_spid))) &&
                 !truthy(raw.value("ignoreflag", Json{}));
         const bool use_raw = groups.empty() && raw_fallback;
         if (groups.empty() && !use_raw) continue;
@@ -249,6 +267,21 @@ Json inventory_from_panel_subdevices(const Json& subdevices) {
             const auto device_type = raw.value("devicetypeflag", Json{});
             const auto spid = text(raw.value("spid", Json{}));
             const auto device_name = text(raw.value("devname", Json{}));
+            const auto group_name = text(g.value("name", Json{}));
+            const auto searchable_name = upper(device_name + " " + group_name);
+            const auto searchable_spid = upper(spid);
+            const bool water_sensor = searchable_name.find("水浸") != std::string::npos ||
+                    searchable_name.find("漏水") != std::string::npos ||
+                    searchable_name.find("WATER") != std::string::npos ||
+                    searchable_name.find("LEAK") != std::string::npos ||
+                    (searchable_spid.size() >= 8 && searchable_spid.ends_with("27A70000"));
+            const bool radar_sensor = searchable_name.find("雷达") != std::string::npos ||
+                    searchable_name.find("人体") != std::string::npos ||
+                    searchable_name.find("RADAR") != std::string::npos ||
+                    searchable_name.find("MOTION") != std::string::npos ||
+                    searchable_name.find("OCCUPANCY") != std::string::npos;
+            const bool binary_sensor = category == "SENSOR" ||
+                    (category == "VS" && (water_sensor || radar_sensor));
             const bool dimmer = category == "LIGHT" &&
                     (integer_is(device_type, 2) ||
                      (spid.size() >= 8 && upper(spid.substr(spid.size() - 8)) == "3FAA0000") ||
@@ -260,19 +293,15 @@ Json inventory_from_panel_subdevices(const Json& subdevices) {
             std::string platform;
             if (category == "CURTAIN") platform = "cover";
             else if (category == "AC") platform = "climate";
-            else if (category == "SENSOR") platform = "binary_sensor";
+            else if (binary_sensor) platform = "binary_sensor";
             else platform = dimmer ? "light" : "switch";
 
             std::string control_key;
             if (category == "CURTAIN") control_key = "curtain_ctrl";
             else if (category == "AC") control_key = "tp_acpwr";
+            else if (binary_sensor) control_key = water_sensor ? "water_detected" : "radar_detected";
             else if (category == "VS") control_key = "tp_vspwr";
             else control_key = parameter.empty() ? "pwr" : parameter;
-            if (category == "SENSOR") {
-                const bool water = device_name.find("水浸") != std::string::npos ||
-                        (spid.size() >= 8 && upper(spid.substr(spid.size() - 8)) == "27A70000");
-                control_key = water ? "water_detected" : "radar_detected";
-            }
 
             const auto group_id = text(g.value("groupid", Json{}));
             Json extend = Json::object();
@@ -285,10 +314,13 @@ Json inventory_from_panel_subdevices(const Json& subdevices) {
             auto identity = text(extend.value("loadid", Json{}));
             if (identity.empty()) identity = text(extend.value("tmallSn", Json{}));
             if (identity.empty()) identity = group ? target + "_" + group_id + "_" + parameter : target;
-            const auto unique_id = platform + "_" + identity;
+            // Keep the previous VS-derived switch AID when promoting a named
+            // radar or leak device to a sensor service in HomeKit.
+            const auto id_platform = binary_sensor && category == "VS" ? "switch" : platform;
+            const auto unique_id = id_platform + "_" + identity;
             if (!seen.insert(unique_id).second) continue;
 
-            auto name = text(g.value("name", Json{}));
+            auto name = group_name;
             if (name.empty()) name = device_name;
             if (name.empty()) name = category;
 
@@ -302,6 +334,7 @@ Json inventory_from_panel_subdevices(const Json& subdevices) {
                     {"groupid", group_id},
                     {"control_key", control_key},
                     {"sequence_key", ""}};
+            if (binary_sensor) item["sensor_type"] = water_sensor ? "leak" : "occupancy";
             append_properties(item, properties_for(platform, control_key));
             inventory.push_back(std::move(item));
         }

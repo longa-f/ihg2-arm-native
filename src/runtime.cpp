@@ -5,12 +5,14 @@
 #include "ihg2_arm/homekit_thermostat.hpp"
 #include "ihg2_arm/gateway_socket.hpp"
 #include "ihg2_arm/homekit_cover.hpp"
+#include "ihg2_arm/lock_presence.hpp"
 #include "ihg2_arm/panel_config.hpp"
 #include "ihg2_arm/vendor_protocol/protocol.hpp"
 
 #include <algorithm>
 #include <arpa/inet.h>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <climits>
@@ -23,6 +25,7 @@
 #include <netinet/in.h>
 #include <optional>
 #include <poll.h>
+#include <pthread.h>
 #include <set>
 #include <sstream>
 #include <string>
@@ -39,6 +42,7 @@ using Clock = std::chrono::steady_clock;
 
 struct Device {
     std::string id, name, platform, target, parent, group, control, sequence;
+    bool leak_sensor{};
     std::vector<std::string> properties, aliases;
     std::optional<std::uint16_t> last_sequence;
     std::optional<int> requested_cover_target;
@@ -189,9 +193,16 @@ std::optional<bool> power_value(const Json& value) {
         if (value == 1) return true;
     }
     if (value.is_string()) {
-        const auto s = value.get<std::string>();
-        if (s == "ON" || s == "on" || s == "1" || s == "true" || s == "WET" || s == "DETECTED") return true;
-        if (s == "OFF" || s == "off" || s == "0" || s == "false" || s == "DRY" || s == "CLEAR") return false;
+        auto s = value.get<std::string>();
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+            return static_cast<char>(std::toupper(c));
+        });
+        if (s == "ON" || s == "1" || s == "TRUE" || s == "WET" || s == "DETECTED" ||
+            s == "ALARM" || s == "LEAK" || s == "WATER" || s == "OCCUPIED" ||
+            s == "PRESENT" || s == "有人" || s == "有水" || s == "漏水" || s == "水浸") return true;
+        if (s == "OFF" || s == "0" || s == "FALSE" || s == "DRY" || s == "CLEAR" ||
+            s == "NOT_DETECTED" || s == "NO_LEAK" || s == "UNOCCUPIED" || s == "ABSENT" ||
+            s == "NORMAL" || s == "无人" || s == "无水" || s == "未漏水" || s == "未检测到") return false;
     }
     return std::nullopt;
 }
@@ -247,11 +258,16 @@ bool has_property(const Device& device, const char* property) {
 
 class Runtime final {
 public:
-    ~Runtime() { clear_secret(key_); }
+    ~Runtime() {
+        stop_lock_worker_.store(true);
+        if (lock_worker_started_) (void)::pthread_join(lock_worker_, nullptr);
+        clear_secret(key_);
+    }
 
     bool initialize(const char* directory) {
         if (!directory || !*directory) return false;
         try {
+            config_directory_ = directory;
             auto panel = load_panel_sdk_config();
             gateway_ip_ = gateway_ipv4_from_arp_file(panel.gateway_mac);
             gateway_port_ = 80;
@@ -272,6 +288,7 @@ public:
                 d.id = item.at("unique_id").get<std::string>();
                 d.name = item.at("name").get<std::string>();
                 d.platform = item.at("platform").get<std::string>();
+                d.leak_sensor = item.value("sensor_type", std::string{}) == "leak";
                 d.target = item.at("target_did").get<std::string>();
                 d.parent = item.value("parent_did", d.target);
                 d.group = item.value("groupid", std::string{});
@@ -289,6 +306,7 @@ public:
             next_heartbeat_ = Clock::now();
             next_poll_ = Clock::now() + std::chrono::milliseconds(100);
             initialized_ = true;
+            start_lock_worker();
             std::fprintf(stderr, "ihg2-arm: loaded %zu accessories; UDP source port %u\n", devices_.size(), socket_.local_port());
             return true;
         } catch (...) {
@@ -351,6 +369,14 @@ public:
                               (store_stat.st_mode & 0077) == 0;
         check(store_ok, "private HomeKit pairing store");
 
+        try {
+            const auto config = presence::load_config(directory);
+            if (config) std::printf("[OK] private lock Wi-Fi sensor config valid (IP and MAC hidden)\n");
+            else std::printf("[INFO] lock Wi-Fi sensor not configured; use --configure-lock IP MAC\n");
+        } catch (...) {
+            check(false, "private lock sensor configuration");
+        }
+
         const bool heartbeat_ok = panel_ok && neighbor_ok && gateway_heartbeat_probe(panel, gateway_ip);
         check(heartbeat_ok, "gateway UDP heartbeat reply");
         std::printf("Doctor result: %s\n", healthy ? "healthy" : "attention required");
@@ -410,12 +436,16 @@ public:
     }
 
     std::size_t count() const { return devices_.size(); }
+    bool lock_sensor_enrolled() const { return lock_sensor_enrolled_.load(); }
+    bool lock_sensor_online() const { return lock_online_.load(); }
     const char* name(std::size_t i) const { return i < devices_.size() ? devices_[i].name.c_str() : ""; }
     const char* homekit_name() const { return homekit_name_.c_str(); }
     std::uint16_t homekit_port() const { return homekit_port_; }
     bool is_light(std::size_t i) const { return i < devices_.size() && devices_[i].platform == "light"; }
     bool is_cover(std::size_t i) const { return i < devices_.size() && devices_[i].platform == "cover"; }
     bool is_climate(std::size_t i) const { return i < devices_.size() && devices_[i].platform == "climate"; }
+    bool is_binary_sensor(std::size_t i) const { return i < devices_.size() && devices_[i].platform == "binary_sensor"; }
+    bool sensor_is_leak(std::size_t i) const { return is_binary_sensor(i) && devices_[i].leak_sensor; }
     bool can_write(std::size_t i) const { return allow_control_ && i < devices_.size() && devices_[i].platform != "binary_sensor"; }
     bool has_brightness(std::size_t i) const { return i < devices_.size() && has_property(devices_[i], "brightness"); }
     bool has_color_temperature(std::size_t i) const { return i < devices_.size() && has_property(devices_[i], "colortemp"); }
@@ -437,6 +467,13 @@ public:
         }
         if (d.values.contains(d.control)) return power_value(d.values[d.control]).value_or(false);
         return false;
+    }
+    int read_sensor(std::uint64_t aid) const {
+        const auto i = index_for_aid(aid);
+        if (i >= devices_.size() || devices_[i].platform != "binary_sensor") return 0;
+        const auto& d = devices_[i];
+        if (!d.values.contains(d.control)) return 0;
+        return power_value(d.values[d.control]).value_or(false) ? 1 : 0;
     }
     bool write_on(std::uint64_t aid, bool on) {
         auto* device = device_for_aid(aid);
@@ -561,6 +598,88 @@ public:
     void set_hap_port() const {}
 
 private:
+    static void* lock_worker_entry(void* context) {
+        static_cast<Runtime*>(context)->lock_worker_loop();
+        return nullptr;
+    }
+
+    void start_lock_worker() {
+        pthread_attr_t attributes;
+        if (::pthread_attr_init(&attributes) != 0) {
+            std::fprintf(stderr, "ihg2-arm: lock presence monitor could not initialize a worker\n");
+            return;
+        }
+        constexpr std::size_t stack_size = 64U * 1024U;
+        int result = ::pthread_attr_setstacksize(&attributes, stack_size);
+        if (result == 0) result = ::pthread_create(&lock_worker_, &attributes, lock_worker_entry, this);
+        (void)::pthread_attr_destroy(&attributes);
+        if (result != 0) {
+            std::fprintf(stderr, "ihg2-arm: lock presence monitor could not start (error %d)\n", result);
+            return;
+        }
+        lock_worker_started_ = true;
+    }
+
+    void lock_worker_loop() noexcept {
+        std::optional<presence::Config> configured;
+        presence::Detector detector;
+        bool error_reported = false;
+        bool previous_online = false;
+        while (!stop_lock_worker_.load()) {
+            std::optional<presence::Config> current;
+            bool config_read_ok = false;
+            try {
+                current = presence::load_config(config_directory_);
+                config_read_ok = true;
+            } catch (const std::exception& error) {
+                if (!error_reported) {
+                    std::fprintf(stderr, "ihg2-arm: lock Wi-Fi config unavailable: %s\n", error.what());
+                    error_reported = true;
+                }
+                configured.reset();
+                detector = presence::Detector{};
+                lock_sensor_enrolled_.store(false);
+                lock_online_.store(false);
+            }
+            if (config_read_ok) {
+                if (current != configured) {
+                    configured = current;
+                    detector = presence::Detector{};
+                    lock_online_.store(false);
+                    lock_sensor_enrolled_.store(configured.has_value());
+                    std::fprintf(stderr, "ihg2-arm: lock Wi-Fi sensor config %s\n",
+                                 configured ? "loaded" : "not configured");
+                }
+                if (!configured) {
+                    error_reported = false;
+                } else {
+                    try {
+                        const bool matched = presence::probe(*configured);
+                        const auto now = Clock::now();
+                        (void)detector.observe(matched, now);
+                        (void)detector.expire(now, std::chrono::seconds(15));
+                        lock_online_.store(detector.online());
+                        error_reported = false;
+                    } catch (const std::exception& error) {
+                        if (!error_reported) {
+                            std::fprintf(stderr, "ihg2-arm: lock Wi-Fi monitor unavailable: %s\n", error.what());
+                            error_reported = true;
+                        }
+                        (void)detector.expire(Clock::now(), std::chrono::seconds(15));
+                        lock_online_.store(detector.online());
+                    }
+                }
+            }
+            const bool online = lock_online_.load();
+            if (online != previous_online) {
+                std::fprintf(stderr, "ihg2-arm: lock Wi-Fi presence %s\n", online ? "detected" : "cleared");
+                previous_online = online;
+            }
+            for (unsigned i = 0; i < 50 && !stop_lock_worker_.load(); ++i)
+                (void)::usleep(100000);
+        }
+    }
+
     static std::optional<int> ac_mode(const Device& d) {
         if (!d.values.contains("ac_mode")) return std::nullopt;
         const auto& value = d.values["ac_mode"];
@@ -756,7 +875,8 @@ private:
                 if (prop == d.control && !power_value(frame.payload[prop])) continue;
                 if (!d.values.contains(prop) || d.values[prop] != frame.payload[prop]) {
                     d.values[prop] = frame.payload[prop];
-                    if (prop == d.control) changed_mask |= IHG2_HAP_STATE_ON;
+                    if (prop == d.control)
+                        changed_mask |= d.platform == "binary_sensor" ? IHG2_HAP_STATE_SENSOR : IHG2_HAP_STATE_ON;
                     if (prop == "brightness") changed_mask |= IHG2_HAP_STATE_BRIGHTNESS;
                     if (prop == "colortemp") changed_mask |= IHG2_HAP_STATE_COLOR_TEMPERATURE;
                     if (prop == "curtain_screentargetpos")
@@ -804,7 +924,7 @@ private:
         (void)now;
     }
 
-    std::string gateway_ip_, homekit_name_;
+    std::string gateway_ip_, homekit_name_, config_directory_;
     std::uint16_t gateway_port_{80}, homekit_port_{53760}, sequence_{0x8000};
     Key key_{};
     Identity identity_{};
@@ -822,6 +942,11 @@ private:
     std::uint64_t bad_packets_{};
     bool allow_control_{};
     bool initialized_{};
+    std::atomic<bool> lock_sensor_enrolled_{};
+    std::atomic<bool> lock_online_{};
+    std::atomic<bool> stop_lock_worker_{};
+    pthread_t lock_worker_{};
+    bool lock_worker_started_{};
 };
 
 Runtime runtime;
@@ -829,6 +954,17 @@ Runtime runtime;
 
 extern "C" int ihg2_arm_initialize(const char* directory) { return runtime.initialize(directory) ? 1 : 0; }
 extern "C" int ihg2_arm_doctor(const char* directory) { return runtime.doctor(directory); }
+extern "C" int ihg2_arm_configure_lock(const char* directory, const char* ipv4, const char* mac_address) {
+    if (!directory || !*directory || !ipv4 || !mac_address ||
+        !ihg2::arm::presence::save_config(directory, ipv4, mac_address)) {
+        std::fprintf(stderr, "Could not save lock sensor config. Expected a unicast IPv4 address and MAC AA:BB:CC:DD:EE:FF.\n");
+        return 1;
+    }
+    std::puts("Lock Wi-Fi sensor config saved in the panel's private runtime directory; no rebuild is needed.");
+    return 0;
+}
+extern "C" int ihg2_arm_lock_sensor_enrolled(void) { return runtime.lock_sensor_enrolled() ? 1 : 0; }
+extern "C" int ihg2_arm_lock_sensor_online(void) { return runtime.lock_sensor_online() ? 1 : 0; }
 extern "C" int ihg2_arm_panel_adoption_probe(std::size_t* accessory_count) {
     if (accessory_count) *accessory_count = 0;
     try {
@@ -849,11 +985,14 @@ extern "C" std::uint16_t ihg2_arm_homekit_port(void) { return runtime.homekit_po
 extern "C" int ihg2_arm_device_is_light(std::size_t i) { return runtime.is_light(i) ? 1 : 0; }
 extern "C" int ihg2_arm_device_is_cover(std::size_t i) { return runtime.is_cover(i) ? 1 : 0; }
 extern "C" int ihg2_arm_device_is_climate(std::size_t i) { return runtime.is_climate(i) ? 1 : 0; }
+extern "C" int ihg2_arm_device_is_binary_sensor(std::size_t i) { return runtime.is_binary_sensor(i) ? 1 : 0; }
+extern "C" int ihg2_arm_device_sensor_is_leak(std::size_t i) { return runtime.sensor_is_leak(i) ? 1 : 0; }
 extern "C" int ihg2_arm_device_can_write(std::size_t i) { return runtime.can_write(i) ? 1 : 0; }
 extern "C" int ihg2_arm_device_has_brightness(std::size_t i) { return runtime.has_brightness(i) ? 1 : 0; }
 extern "C" int ihg2_arm_device_has_color_temperature(std::size_t i) { return runtime.has_color_temperature(i) ? 1 : 0; }
 extern "C" int ihg2_arm_device_has_cover_position(std::size_t i) { return runtime.has_cover_position(i) ? 1 : 0; }
 extern "C" int ihg2_arm_device_read_on(std::uint64_t aid) { return runtime.read_on(aid) ? 1 : 0; }
+extern "C" int ihg2_arm_device_read_sensor(std::uint64_t aid) { return runtime.read_sensor(aid); }
 extern "C" int ihg2_arm_device_write_on(std::uint64_t aid, int on) { return runtime.write_on(aid, on != 0) ? 1 : 0; }
 extern "C" int ihg2_arm_device_read_brightness(std::uint64_t aid) { return runtime.read_brightness(aid); }
 extern "C" int ihg2_arm_device_write_brightness(std::uint64_t aid, int percent) { return runtime.write_brightness(aid, percent) ? 1 : 0; }

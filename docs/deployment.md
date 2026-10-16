@@ -70,13 +70,21 @@ Both entry points can omit the target when exactly one ADB device is already con
 
 The installer stages only the generic executable and service scripts under `/data/local/tmp`. It verifies root/ABI/API/mDNS/init support and panel SDK auto-discovery before stopping the running bridge, atomically replaces the executable, and starts the init-managed supervisor. It preserves `/data/local/ihg2-arm-native/.hap_store` and the pairing PIN, removes obsolete `bridge.json`, `gateway.key`, and inventory files after the new automatic bridge is listening, and keeps a copy of the previous executable for service rollback. It then checks `/proc/net/tcp*` for the automatic HomeKit listener on TCP `53760`.
 
+The lock Wi-Fi presence sensor uses a separate per-home runtime config. After installing the bridge, write the lock's current IP and Wi-Fi MAC from the maintenance computer:
+
+```sh
+./install.sh PANEL_IP --configure-lock 192.168.1.100 02:00:00:00:00:01
+```
+
+Windows uses `install.cmd PANEL_IP -ConfigureLock -LockIp 192.168.1.100 -LockMac 02:00:00:00:00:01`. Replace both values with that home's lock details. The command stores them in `/data/local/ihg2-arm-native/config/lock-sensor.conf`, owned by root with mode `0600`; no household values enter the program or release archive. The running service rereads the file every five seconds, so rerun the command if the lock's IP changes. No rebuild or service restart is needed. The sensor probes only the configured IP with ARP and accepts a reply only when its MAC matches; it never scans the subnet. It reports local network reachability, which can trigger Apple Home automations but does not confirm an unlock. The panel and lock must share a directly connected subnet.
+
 On first pairing, the bridge generates a random HomeKit setup code and stores it root-only at `/data/local/ihg2-arm-native/config/pairing-code.txt`. A healthy `--doctor` run displays the code; it can also be read directly when pairing is needed:
 
 ```sh
 adb -s DEVICE shell su 0 cat /data/local/ihg2-arm-native/config/pairing-code.txt
 ```
 
-There is no manual gateway-config mode. Each start reads the current key and device list from that panel's vendor SDK and resolves its gateway address locally. Existing obsolete config files are ignored by the new binary and removed after a successful update.
+Each start reads the current key and device list from that panel's vendor SDK and resolves its gateway address locally. The lock sensor's separate private runtime file is optional and manually configured as described above. Existing obsolete gateway config files are ignored by the new binary and removed after a successful update.
 
 The installer briefly remounts `/system` read-write to install or repair the boot hook's SELinux label, then restores read-only. It verifies the `install_recovery_exec` label before starting the Android init service.
 
