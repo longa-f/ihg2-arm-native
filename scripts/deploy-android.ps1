@@ -8,10 +8,44 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$script:TranscriptStarted = $false
+
+function Stop-DeploymentTranscript([int] $ExitCode) {
+    if (-not $script:TranscriptStarted) { return }
+    Write-Host "Deployment finished at $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK') with exit code $ExitCode"
+    Stop-Transcript | Out-Null
+    $script:TranscriptStarted = $false
+}
 
 function Fail([string] $Message) {
-    [Console]::Error.WriteLine($Message)
+    Write-Error -Message $Message -ErrorAction Continue
+    Stop-DeploymentTranscript 1
     exit 1
+}
+
+if (-not $Doctor -and -not $ConfigureLock) {
+    try {
+        $logDirectory = Join-Path $PSScriptRoot 'logs'
+        if (Test-Path -LiteralPath $logDirectory) {
+            $logDirectoryItem = Get-Item -LiteralPath $logDirectory -Force
+            if (-not $logDirectoryItem.PSIsContainer -or
+                ($logDirectoryItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Unsafe deployment log directory: $logDirectory"
+            }
+        }
+        else {
+            New-Item -ItemType Directory -Path $logDirectory | Out-Null
+        }
+        $logTimestamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
+        $script:LogPath = Join-Path $logDirectory "install-$logTimestamp-$PID.log"
+        Start-Transcript -Path $script:LogPath -NoClobber | Out-Null
+        $script:TranscriptStarted = $true
+        Write-Host "Deployment log: $script:LogPath"
+    }
+    catch {
+        [Console]::Error.WriteLine("Could not start deployment log: $($_.Exception.Message)")
+        exit 2
+    }
 }
 
 $adbName = if ($env:ADB) { $env:ADB } else { 'adb' }
@@ -40,14 +74,18 @@ elseif ($Target -match '^(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?$') {
     if ($LASTEXITCODE -ne 0) { Fail "ADB could not connect to $Target." }
 }
 
-$state = & $script:AdbPath -s $Target get-state 2>$null
-if ($LASTEXITCODE -ne 0 -or $state -ne 'device') {
+$stateOutput = & $script:AdbPath -s $Target get-state 2>&1
+$stateExitCode = $LASTEXITCODE
+$state = ($stateOutput -join "`n").Trim()
+if ($stateExitCode -ne 0 -or $state -ne 'device') {
+    if ($state) { Write-Host "ADB get-state output: $state" }
     Fail "ADB target is unavailable: $Target. Enable/authorize ADB and check network reachability."
 }
 $rootIdentity = & $script:AdbPath -s $Target shell su 0 id 2>&1
 if ($LASTEXITCODE -ne 0 -or (($rootIdentity -join "`n") -notmatch 'uid=0')) {
     Fail "ADB root access failed: $($rootIdentity -join ' ')"
 }
+if ($script:TranscriptStarted) { Write-Host "ADB target: $Target" }
 
 if ($Doctor -and $ConfigureLock) { Fail 'Choose either -Doctor or -ConfigureLock.' }
 if ($Doctor) {
@@ -111,6 +149,12 @@ Push-DeploymentFile $supervisor "$remoteStage/supervisor.sh"
 Push-DeploymentFile $bootHook "$remoteStage/install-recovery.sh"
 Push-DeploymentFile $deviceInstaller "$remoteStage/install-device.sh"
 & $script:AdbPath -s $Target shell su 0 "$remoteStage/ihg2-arm-bridge" --check-panel-sdk
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) {
+    $result = $LASTEXITCODE
+    Stop-DeploymentTranscript $result
+    exit $result
+}
 & $script:AdbPath -s $Target shell su 0 sh "$remoteStage/install-device.sh"
-exit $LASTEXITCODE
+$result = $LASTEXITCODE
+Stop-DeploymentTranscript $result
+exit $result

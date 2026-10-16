@@ -49,6 +49,7 @@ test: all
 	./$(BUILD_DIR)/log_writer_test
 	./$(BUILD_DIR)/lock_presence_test
 	sh ./tests/install_device_rollback_test.sh
+	bash ./tests/deploy_logging_test.sh
 
 android:
 	./scripts/build-android.sh

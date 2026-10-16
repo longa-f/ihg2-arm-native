@@ -39,6 +39,34 @@ repo_root=$(cd "$(dirname "$0")/.." && pwd)
 script_dir=$(cd "$(dirname "$0")" && pwd)
 adb_bin=${ADB:-adb}
 
+finish_deployment_log() {
+    local result=$?
+    trap - EXIT
+    printf 'Deployment finished at %s with exit code %d\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$result"
+    exit "$result"
+}
+
+if [[ "$mode" == install ]]; then
+    log_dir="$script_dir/logs"
+    if [[ -L "$log_dir" || ( -e "$log_dir" && ! -d "$log_dir" ) ]]; then
+        printf 'Refusing unsafe deployment log directory: %s\n' "$log_dir" >&2
+        exit 1
+    fi
+    if ! mkdir -p "$log_dir" || [[ -L "$log_dir" ]]; then
+        printf 'Could not create deployment log directory: %s\n' "$log_dir" >&2
+        exit 1
+    fi
+    chmod 0700 "$log_dir"
+    log_file="$log_dir/install-$(date -u '+%Y%m%dT%H%M%SZ')-$$.log"
+    if ! (umask 077; set -C; : > "$log_file"); then
+        printf 'Could not create deployment log: %s\n' "$log_file" >&2
+        exit 1
+    fi
+    exec > >(tee -a "$log_file") 2>&1
+    printf 'Deployment log: %s\n' "$log_file"
+    trap finish_deployment_log EXIT
+fi
+
 if ! command -v "$adb_bin" >/dev/null 2>&1; then
     printf 'Android platform-tools (adb) is required on this computer.\n' >&2
     exit 2
@@ -56,10 +84,11 @@ elif [[ "$target" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(:[0-9]+)?$ ]]; then
     "$adb_bin" connect "$target"
 fi
 
-if ! state=$("$adb_bin" -s "$target" get-state 2>/dev/null) || [[ "$state" != device ]]; then
+if ! state=$("$adb_bin" -s "$target" get-state) || [[ "$state" != device ]]; then
     printf 'ADB target is unavailable: %s. Enable/authorize ADB and check network reachability.\n' "$target" >&2
     exit 1
 fi
+printf 'ADB target: %s\n' "$target"
 root_identity=$("$adb_bin" -s "$target" shell su 0 id)
 case "$root_identity" in
     *"uid=0"*) ;;
@@ -123,10 +152,10 @@ fi
 remote_stage=/data/local/tmp/ihg2-arm-deploy-v2
 printf 'Deploying IHG2 ARM bridge v%s\n' "$version"
 "$adb_bin" -s "$target" shell "mkdir -p '$remote_stage' && chmod 0700 '$remote_stage'"
-"$adb_bin" -s "$target" push "$binary" "$remote_stage/ihg2-arm-bridge" >/dev/null
-"$adb_bin" -s "$target" push "$version_file" "$remote_stage/VERSION" >/dev/null
-"$adb_bin" -s "$target" push "$supervisor_file" "$remote_stage/supervisor.sh" >/dev/null
-"$adb_bin" -s "$target" push "$hook_file" "$remote_stage/install-recovery.sh" >/dev/null
-"$adb_bin" -s "$target" push "$device_install_file" "$remote_stage/install-device.sh" >/dev/null
+"$adb_bin" -s "$target" push "$binary" "$remote_stage/ihg2-arm-bridge"
+"$adb_bin" -s "$target" push "$version_file" "$remote_stage/VERSION"
+"$adb_bin" -s "$target" push "$supervisor_file" "$remote_stage/supervisor.sh"
+"$adb_bin" -s "$target" push "$hook_file" "$remote_stage/install-recovery.sh"
+"$adb_bin" -s "$target" push "$device_install_file" "$remote_stage/install-device.sh"
 "$adb_bin" -s "$target" shell su 0 "$remote_stage/ihg2-arm-bridge" --check-panel-sdk
 "$adb_bin" -s "$target" shell su 0 sh "$remote_stage/install-device.sh"

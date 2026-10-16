@@ -51,6 +51,7 @@ __pycache__/
 /config/pairing-code.txt
 /data/
 /logs/
+/scripts/logs/
 *.log
 *.pcap
 *.key
