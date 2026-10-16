@@ -54,7 +54,7 @@ On Windows:
 
 The deployed binary also supports `--doctor` when run as root on the panel. It checks private SDK data, the supported accessory count, gateway neighbor resolution and heartbeat response, HomeKit TCP and mDNS listeners, the boot hook's SELinux execution label, and pairing-store permissions. It hides gateway credentials and household device identifiers. When all checks pass, it prints the protected HomeKit setup code if the code file is present and valid. Its network test sends one heartbeat and no device-control command.
 
-Before installing, the optional host-side preflight reports panel ABI, Android API, memory, storage, and available boot-hook information:
+Before installing, the optional host-side preflight reports panel ABI, Android API, available memory, storage, and boot-hook information. When the bridge is running, it also reports the bridge and log-writer RSS and each process's peak RSS since startup:
 
 ```sh
 ./preflight.sh 192.168.5.23
@@ -68,7 +68,7 @@ On Windows:
 
 Both entry points can omit the target when exactly one ADB device is already connected. They never copy the household AES key or accessory inventory to the computer. The same install command handles first installation and updates, and preserves Apple Home pairing data.
 
-The installer stages only the generic executable and service scripts under `/data/local/tmp`. It verifies root/ABI/API/mDNS/init support and panel SDK auto-discovery before stopping the running bridge, atomically replaces the executable, and starts the init-managed supervisor. It preserves `/data/local/ihg2-arm-native/.hap_store` and the pairing PIN, removes obsolete `bridge.json`, `gateway.key`, and inventory files after the new automatic bridge is listening, and keeps a copy of the previous executable for service rollback. It then checks `/proc/net/tcp*` for the automatic HomeKit listener on TCP `53760`.
+The installer stages only the generic executable and service scripts under `/data/local/tmp`. It verifies root/ABI/API/mDNS/init support and panel SDK auto-discovery before stopping the running bridge, atomically replaces the executable, and starts the init-managed supervisor. It preserves `/data/local/ihg2-arm-native/.hap_store` and the pairing PIN, and removes obsolete `bridge.json`, `gateway.key`, and inventory files only after the new automatic bridge is listening on TCP `53760` for five consecutive checks. Before replacing files, it saves the previous executable, version, and supervisor. If any later install step fails, it stops the attempted service, restores those files and the original boot-hook state, and restarts the previous service only if it was running before the update. On a failed first install with no previous executable, it stops the service, removes the failed service files, and removes the IHG2 boot hook so Android does not keep launching a broken installation. Pairing data is preserved in either case.
 
 The lock Wi-Fi presence sensor uses a separate per-home runtime config. After installing the bridge, write the lock's current IP and Wi-Fi MAC from the maintenance computer:
 
@@ -88,6 +88,6 @@ Each start reads the current key and device list from that panel's vendor SDK an
 
 The installer briefly remounts `/system` read-write to install or repair the boot hook's SELinux label, then restores read-only. It verifies the `install_recovery_exec` label before starting the Android init service.
 
-The supervisor sends bridge stdout and stderr through the built-in log writer. `bridge.log` and `bridge.log.1` are each capped at 5 MiB, so their combined size stays at or below 10 MiB. Rotation happens while the bridge is running and does not restart the HomeKit service. The bridge creates `.bridge-log.pipe` through the system API, so installation does not depend on a shell `mkfifo` command; the temporary FIFO is removed when the service stops. If storage rejects log writes, the writer drains and discards further output so a full disk cannot block the bridge.
+The supervisor sends bridge stdout and stderr through the built-in log writer. `bridge.log` and `bridge.log.1` are each capped at 5 MiB, so their combined size stays at or below 10 MiB. Rotation happens while the bridge is running and does not restart the HomeKit service. After quick bridge exits, restart delays grow from 3 to 6, 12, 24, 48, and 60 seconds; a run lasting at least a minute resets the delay. The bridge creates `.bridge-log.pipe` through the system API, so installation does not depend on a shell `mkfifo` command; the temporary FIFO is removed when the service stops. If storage rejects log writes, the writer drains and discards further output so a full disk cannot block the bridge.
 
 The panel links HomeKit DNS-SD through its firmware's `/system/lib/libmdnssd.so`; OpenSSL and the C++ runtime are statically linked. HAP TCP (default 53760), gateway UDP (default 80), and the bridge's ephemeral UDP source port are separate. The gateway protocol and curtain conversion logic have offline tests; the current device deployment additionally verifies that the HomeKit listener comes up. A physical movement is not triggered by the installer.

@@ -48,6 +48,7 @@ log_message() {
     printf '%s\n' "$1" > "$LOG_PIPE"
 }
 
+retry_delay=3
 while :; do
     if [ ! -x "$BASE/ihg2-arm-bridge" ]; then
         sleep 10
@@ -68,11 +69,21 @@ while :; do
 
     cd "$BASE" || exit 1
     log_message "$(date '+%Y-%m-%d %H:%M:%S') starting native bridge"
+    bridge_started_at=$(date +%s)
     ./ihg2-arm-bridge > "$LOG_PIPE" 2>&1 &
     BRIDGE_PID=$!
     wait "$BRIDGE_PID"
     result=$?
     BRIDGE_PID=
     log_message "$(date '+%Y-%m-%d %H:%M:%S') bridge exited with status $result; retrying"
-    sleep 3
+    bridge_stopped_at=$(date +%s)
+    if [ -n "$bridge_started_at" ] && [ -n "$bridge_stopped_at" ]; then
+        bridge_uptime=$((bridge_stopped_at - bridge_started_at))
+        if [ "$bridge_uptime" -ge 60 ]; then retry_delay=3; fi
+    fi
+    sleep "$retry_delay"
+    if [ "$retry_delay" -lt 60 ]; then
+        retry_delay=$((retry_delay * 2))
+        if [ "$retry_delay" -gt 60 ]; then retry_delay=60; fi
+    fi
 done
