@@ -4,9 +4,9 @@
 
 ## 支持范围
 
-发布包面向已验证的 RK3288 同类中控屏，要求 Android API 25 或更新版本、32 位 armeabi-v7a、root 权限、系统 DNS-SD 库 /system/lib/libmdnssd.so，以及由 flash_recovery 服务启动的预期启动钩子。它不是通用 Android 安装器。设备不符合这些条件时，安装器会停止，不会替换不认识的启动脚本。
+发布包面向本项目对应的 RK3288 同类中控屏，要求 Android API 25 或更新版本、32 位 armeabi-v7a 和 root 权限；它不是通用 Android 安装器。系统 DNS-SD 库 /system/lib/libmdnssd.so、mdnsd 服务以及 /init.rc 中的 flash_recovery 服务项由中控屏固件预先提供，用户不需要另行安装。安装器会自动检查这些依赖；首次安装时把本桥的启动脚本放到 /system/bin/install-recovery.sh，后续升级沿用该脚本，由固件已有的 flash_recovery 服务调用。若路径上存在不属于本桥的启动脚本，安装器会拒绝覆盖。
 
-中控屏还须安装并配置厂商“全屋智控”应用，且应用已连接网关并同步设备清单。家庭私有数据由屏端程序运行时读取；自动读取来源和边界见 AUTO-ADOPTION.md。
+中控屏还须安装并配置厂商“全屋智控”应用，使其本地 SDK 数据中已有网关密钥、身份和同步后的设备清单。桥不检查用户当前登录状态，也不使用厂商云端账号；它只读取这些本地文件。首次检查还要求中控屏邻居表中已有网关 IP，通常让厂商应用连接一次网关即可。家庭私有数据由屏端程序运行时读取；自动读取来源和边界见 AUTO-ADOPTION.md。
 
 发布包包括 ARM 可执行文件、Windows 和 Linux 部署入口、面板端安装脚本、预检脚本、服务监管脚本及第三方许可。包中不含网关密钥、家庭设备清单、HomeKit 配对数据库或每户配置。维护电脑需要 Android Platform Tools（adb），不需要 NDK 或 C++ 构建环境。兼容的中控屏型号使用同一份发布包。
 
