@@ -151,4 +151,24 @@ int main() {
     assert(!live_socket.send_packet(nullptr, 1));
     ::close(unrelated_sender);
     ::close(gateway_peer);
+
+    // A queued UDP ICMP error must be consumed; otherwise POLLERR stays set
+    // and starves all future receives on the connected gateway socket.
+    const int closed_peer = ::socket(AF_INET, SOCK_DGRAM, 0);
+    assert(closed_peer >= 0);
+    sockaddr_in closed_address{};
+    closed_address.sin_family = AF_INET;
+    closed_address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    closed_address.sin_port = htons(0);
+    assert(::bind(closed_peer, reinterpret_cast<const sockaddr*>(&closed_address), sizeof closed_address) == 0);
+    socklen_t closed_address_size = sizeof closed_address;
+    assert(::getsockname(closed_peer, reinterpret_cast<sockaddr*>(&closed_address), &closed_address_size) == 0);
+    ::close(closed_peer);
+
+    GatewaySocket error_socket;
+    assert(error_socket.open("127.0.0.1", ntohs(closed_address.sin_port)));
+    assert(error_socket.send_packet(outgoing.data(), outgoing.size()));
+    assert(error_socket.receive(1000, datagram) == ReceiveStatus::socket_error);
+    assert(error_socket.error_number() == ECONNREFUSED);
+    assert(error_socket.receive(20, datagram) == ReceiveStatus::timeout);
 }

@@ -33,6 +33,10 @@
 #define kMaxDevices 32
 #define kAttributeCapacity 1024
 #define kSessionCount 8
+// HAPTime uses milliseconds. Keep gateway receive latency low without a
+// 100 Hz timer allocation, and sample the slow lock monitor once per second.
+#define kGatewayPollInterval (50 * HAPMillisecond)
+#define kLockSensorPollInterval HAPSecond
 
 extern const HAPService ihg2SwitchService;
 extern HAPError IdentifyAccessory(HAPAccessoryServerRef*, const HAPAccessoryIdentifyRequest*, void*);
@@ -226,7 +230,7 @@ static void SaveSetupInfo(void) {
 static void GatewayTimer(HAPPlatformTimerRef timer, void* context) {
     (void)timer; (void)context;
     ihg2_arm_poll();
-    HAPTime deadline = HAPPlatformClockGetCurrent() + 10;
+    HAPTime deadline = HAPPlatformClockGetCurrent() + kGatewayPollInterval;
     if (HAPPlatformTimerRegister(&gatewayTimer, deadline, GatewayTimer, NULL)) HAPFatalError();
 }
 
@@ -239,7 +243,7 @@ static void LockSensorTimer(HAPPlatformTimerRef timer, void* context) {
                                      (const HAPCharacteristic*) &lockOccupancyCharacteristic,
                                      &lockSensorService, &lockSensorAccessory);
     }
-    if (HAPPlatformTimerRegister(&lockSensorTimer, HAPPlatformClockGetCurrent() + 1,
+    if (HAPPlatformTimerRegister(&lockSensorTimer, HAPPlatformClockGetCurrent() + kLockSensorPollInterval,
                                  LockSensorTimer, NULL)) HAPFatalError();
 }
 
@@ -610,8 +614,8 @@ int main(int argc, char* argv[]) {
     }
     hapReady = true;
     lastLockSensorValue = ihg2_arm_lock_sensor_online() ? 1 : 0;
-    if (HAPPlatformTimerRegister(&gatewayTimer, HAPPlatformClockGetCurrent() + 10, GatewayTimer, NULL)) HAPFatalError();
-    if (HAPPlatformTimerRegister(&lockSensorTimer, HAPPlatformClockGetCurrent() + 1,
+    if (HAPPlatformTimerRegister(&gatewayTimer, HAPPlatformClockGetCurrent() + kGatewayPollInterval, GatewayTimer, NULL)) HAPFatalError();
+    if (HAPPlatformTimerRegister(&lockSensorTimer, HAPPlatformClockGetCurrent() + kLockSensorPollInterval,
                                  LockSensorTimer, NULL)) HAPFatalError();
     HAPPlatformRunLoopRun();
     HAPAccessoryServerRelease(&accessoryServer);

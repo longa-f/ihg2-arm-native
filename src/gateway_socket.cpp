@@ -136,8 +136,26 @@ ReceiveStatus GatewaySocket::receive(std::uint32_t timeout_ms, GatewayDatagramVi
             error_number_ = errno;
             return ReceiveStatus::socket_error;
         }
-        if ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+        if ((descriptor.revents & POLLNVAL) != 0) {
+            error_number_ = EBADF;
+            return ReceiveStatus::socket_error;
+        }
+        if ((descriptor.revents & POLLHUP) != 0) {
             error_number_ = EIO;
+            return ReceiveStatus::socket_error;
+        }
+        if ((descriptor.revents & POLLERR) != 0) {
+            // Connected UDP sockets report asynchronous ICMP errors through
+            // POLLERR. Reading SO_ERROR also clears the queued error; leaving
+            // it pending makes every later poll wake immediately and prevents
+            // the bridge from receiving any more gateway reports.
+            int socket_error = 0;
+            socklen_t size = sizeof socket_error;
+            if (::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &socket_error, &size) != 0) {
+                error_number_ = errno;
+            } else {
+                error_number_ = socket_error != 0 ? socket_error : EIO;
+            }
             return ReceiveStatus::socket_error;
         }
         if ((descriptor.revents & POLLIN) == 0) {

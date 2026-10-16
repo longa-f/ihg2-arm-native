@@ -102,8 +102,8 @@ prepare_stage() {
     fixture_root=$1
     stage="$fixture_root/data/local/tmp/ihg2-arm-deploy-v2"
     mkdir -p "$stage"
-    make_binary "$stage/ihg2-arm-bridge" 1.1.3
-    printf '1.1.3\n' > "$stage/VERSION"
+    make_binary "$stage/ihg2-arm-bridge" 1.1.4
+    printf '1.1.4\n' > "$stage/VERSION"
     printf 'new supervisor\n' > "$stage/supervisor.sh"
     printf '#!/system/bin/sh\n# IHG2_ARM_NATIVE_BOOT_HOOK_V1\n' > "$stage/install-recovery.sh"
 }
@@ -154,7 +154,7 @@ printf 'running\n' > "$upgrade_root/mdnsd"
 printf '  0: 00000000:D200 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 0 1\n' > "$upgrade_root/proc/net/tcp"
 
 upgrade_output="$test_root/upgrade.out"
-if run_installer "$upgrade_root" 1.1.3 "$upgrade_output"; then
+if run_installer "$upgrade_root" 1.1.4 "$upgrade_output"; then
     fail 'failed upgrade unexpectedly returned success'
 fi
 assert_eq '1.1.2' "$(cat "$base/VERSION")" 'previous version restored'
@@ -172,14 +172,14 @@ if ! run_installer "$upgrade_root" '' "$success_output"; then
     cat "$success_output" >&2
     fail 'healthy upgrade unexpectedly failed'
 fi
-assert_eq '1.1.3' "$(cat "$base/VERSION")" 'new version installed'
-assert_eq 'IHG2 ARM bridge version 1.1.3' "$("$base/ihg2-arm-bridge" --version)" 'new executable installed'
+assert_eq '1.1.4' "$(cat "$base/VERSION")" 'new version installed'
+assert_eq 'IHG2 ARM bridge version 1.1.4' "$("$base/ihg2-arm-bridge" --version)" 'new executable installed'
 assert_eq 'pairing-preserved' "$(cat "$base/.hap_store/pairing.db")" 'pairing data preserved on success'
 
 fresh_root="$test_root/fresh"
 make_fixture "$fresh_root"
 fresh_output="$test_root/fresh.out"
-if run_installer "$fresh_root" 1.1.3 "$fresh_output"; then
+if run_installer "$fresh_root" 1.1.4 "$fresh_output"; then
     fail 'failed first install unexpectedly returned success'
 fi
 test ! -e "$fresh_root/system/bin/install-recovery.sh" || fail 'failed first install left a boot hook behind'
