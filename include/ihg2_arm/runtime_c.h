@@ -1,6 +1,10 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
+#define IHG2_ARM_ELEVATOR_UP_AID UINT64_C(0x49484732454C5550)
+#define IHG2_ARM_ELEVATOR_DOWN_AID UINT64_C(0x49484732454C444E)
+#define IHG2_ARM_ELEVATOR_UP 0
+#define IHG2_ARM_ELEVATOR_DOWN 1
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -28,6 +32,8 @@ int ihg2_arm_device_has_cover_position(size_t index);
 int ihg2_arm_device_read_on(uint64_t aid);
 int ihg2_arm_device_read_sensor(uint64_t aid);
 int ihg2_arm_device_write_on(uint64_t aid, int on);
+int ihg2_arm_elevator_available(void);
+void ihg2_hap_elevator_state_changed(size_t direction);
 int ihg2_arm_device_read_brightness(uint64_t aid);
 int ihg2_arm_device_write_brightness(uint64_t aid, int percent);
 uint32_t ihg2_arm_device_read_color_temperature(uint64_t aid);

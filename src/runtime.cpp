@@ -6,6 +6,7 @@
 #include "ihg2_arm/gateway_socket.hpp"
 #include "ihg2_arm/homekit_cover.hpp"
 #include "ihg2_arm/lock_presence.hpp"
+#include "ihg2_arm/native_elevator.hpp"
 #include "ihg2_arm/panel_config.hpp"
 #include "ihg2_arm/vendor_protocol/protocol.hpp"
 
@@ -277,10 +278,13 @@ public:
             key_ = panel.gateway_key;
             auto inventory = std::move(panel.inventory);
             allow_control_ = true;
+            elevator_available_ = native_elevator::available();
             homekit_name_ = "IHG2 Local Bridge";
             homekit_port_ = 53760;
             std::fprintf(stderr, "ihg2-arm: loaded %zu accessories from panel SDK auto-discovery\n",
                          inventory.size());
+            if (elevator_available_)
+                std::fprintf(stderr, "ihg2-arm: Leelen native elevator controls enabled\n");
             if (!inventory.is_array() || inventory.empty() || inventory.size() > 32) return false;
             std::set<std::string> ids;
             for (const auto& item : inventory) {
@@ -322,6 +326,10 @@ public:
             if (!ok) healthy = false;
         };
         check(::geteuid() == 0, "root access");
+        if (native_elevator::available())
+            std::puts("[OK] native Leelen elevator app and activity manager present (no call sent)");
+        else
+            std::puts("[INFO] native Leelen elevator app unavailable; gateway accessories remain available");
         if (!directory || !*directory) {
             check(false, "bridge data directory");
             return 1;
@@ -392,6 +400,7 @@ public:
     void poll() {
         if (!initialized_) return;
         const auto now = Clock::now();
+        update_elevator_switches(now);
         GatewayDatagramView datagram{};
         for (int i = 0; i < 8; ++i) {
             const auto status = socket_.receive(0, datagram);
@@ -458,6 +467,8 @@ public:
         return h < 2 ? h + 2 : h;
     }
     bool read_on(std::uint64_t aid) const {
+        if (aid == IHG2_ARM_ELEVATOR_UP_AID) return elevator_on_[IHG2_ARM_ELEVATOR_UP];
+        if (aid == IHG2_ARM_ELEVATOR_DOWN_AID) return elevator_on_[IHG2_ARM_ELEVATOR_DOWN];
         const auto i = index_for_aid(aid);
         if (i >= devices_.size()) return false;
         const auto& d = devices_[i];
@@ -476,6 +487,10 @@ public:
         return power_value(d.values[d.control]).value_or(false) ? 1 : 0;
     }
     bool write_on(std::uint64_t aid, bool on) {
+        if (aid == IHG2_ARM_ELEVATOR_UP_AID)
+            return write_elevator(IHG2_ARM_ELEVATOR_UP, on);
+        if (aid == IHG2_ARM_ELEVATOR_DOWN_AID)
+            return write_elevator(IHG2_ARM_ELEVATOR_DOWN, on);
         auto* device = device_for_aid(aid);
         if (!device || !can_write_device(*device)) return false;
         auto& d = *device;
@@ -598,6 +613,40 @@ public:
     void set_hap_port() const {}
 
 private:
+    bool write_elevator(std::size_t direction, bool on) {
+        if (direction >= elevator_on_.size() || !elevator_available_) return false;
+        if (!on) {
+            if (elevator_on_[direction]) {
+                elevator_on_[direction] = false;
+                ihg2_hap_elevator_state_changed(direction);
+            }
+            return true;
+        }
+        if (elevator_on_[direction]) return true;
+
+        const auto native_direction = direction == IHG2_ARM_ELEVATOR_UP
+                ? native_elevator::Direction::up : native_elevator::Direction::down;
+        if (!native_elevator::launch(native_direction)) {
+            std::fprintf(stderr, "ihg2-arm: native elevator activity could not be launched\n");
+            return false;
+        }
+        elevator_on_[direction] = true;
+        elevator_reset_at_[direction] = Clock::now() + std::chrono::seconds(2);
+        ihg2_hap_elevator_state_changed(direction);
+        std::fprintf(stderr, "ihg2-arm: native elevator %s request dispatched\n",
+                     direction == IHG2_ARM_ELEVATOR_UP ? "up" : "down");
+        return true;
+    }
+
+    void update_elevator_switches(Clock::time_point now) {
+        for (std::size_t direction = 0; direction < elevator_on_.size(); ++direction) {
+            if (elevator_on_[direction] && now >= elevator_reset_at_[direction]) {
+                elevator_on_[direction] = false;
+                ihg2_hap_elevator_state_changed(direction);
+            }
+        }
+    }
+
     static void* lock_worker_entry(void* context) {
         static_cast<Runtime*>(context)->lock_worker_loop();
         return nullptr;
@@ -942,6 +991,9 @@ private:
     std::uint64_t bad_packets_{};
     bool allow_control_{};
     bool initialized_{};
+    bool elevator_available_{};
+    std::array<bool, 2> elevator_on_{};
+    std::array<Clock::time_point, 2> elevator_reset_at_{};
     std::atomic<bool> lock_sensor_enrolled_{};
     std::atomic<bool> lock_online_{};
     std::atomic<bool> stop_lock_worker_{};
@@ -965,6 +1017,7 @@ extern "C" int ihg2_arm_configure_lock(const char* directory, const char* ipv4, 
 }
 extern "C" int ihg2_arm_lock_sensor_enrolled(void) { return runtime.lock_sensor_enrolled() ? 1 : 0; }
 extern "C" int ihg2_arm_lock_sensor_online(void) { return runtime.lock_sensor_online() ? 1 : 0; }
+extern "C" int ihg2_arm_elevator_available(void) { return ihg2::arm::native_elevator::available() ? 1 : 0; }
 extern "C" int ihg2_arm_panel_adoption_probe(std::size_t* accessory_count) {
     if (accessory_count) *accessory_count = 0;
     try {

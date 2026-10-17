@@ -7,7 +7,7 @@ BUILD_DIR ?= build
 
 .PHONY: all test clean android package-android
 
-all: $(BUILD_DIR)/state_store_test $(BUILD_DIR)/protocol_test $(BUILD_DIR)/homekit_cover_test $(BUILD_DIR)/homekit_color_temperature_test $(BUILD_DIR)/homekit_thermostat_test $(BUILD_DIR)/panel_config_test $(BUILD_DIR)/log_writer_test $(BUILD_DIR)/lock_presence_test
+all: $(BUILD_DIR)/state_store_test $(BUILD_DIR)/protocol_test $(BUILD_DIR)/homekit_cover_test $(BUILD_DIR)/homekit_color_temperature_test $(BUILD_DIR)/homekit_thermostat_test $(BUILD_DIR)/panel_config_test $(BUILD_DIR)/log_writer_test $(BUILD_DIR)/lock_presence_test $(BUILD_DIR)/native_elevator_test
 
 $(BUILD_DIR):
 	mkdir -p $@
@@ -39,6 +39,9 @@ $(BUILD_DIR)/log_writer_test: tests/log_writer_test.cpp $(BUILD_DIR)/log_writer.
 $(BUILD_DIR)/lock_presence_test: src/lock_presence.cpp tests/lock_presence_test.cpp | $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -pthread $^ -o $@
 
+$(BUILD_DIR)/native_elevator_test: src/native_elevator.cpp tests/native_elevator_test.cpp | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $^ -o $@
+
 test: all
 	./$(BUILD_DIR)/state_store_test
 	./$(BUILD_DIR)/protocol_test
@@ -48,6 +51,7 @@ test: all
 	./$(BUILD_DIR)/panel_config_test
 	./$(BUILD_DIR)/log_writer_test
 	./$(BUILD_DIR)/lock_presence_test
+	./$(BUILD_DIR)/native_elevator_test
 	sh ./tests/install_device_rollback_test.sh
 	bash ./tests/deploy_logging_test.sh
 

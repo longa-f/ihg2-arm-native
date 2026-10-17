@@ -31,6 +31,7 @@
 #define kBridgeVersionText "IHG2 ARM bridge version " IHG2_ARM_VERSION
 
 #define kMaxDevices 32
+#define kMaxExtraAccessories 3
 #define kAttributeCapacity 1024
 #define kSessionCount 8
 // HAPTime uses milliseconds. Keep gateway receive latency low without a
@@ -79,7 +80,8 @@ static uint8_t scratch[kHAPIPSession_DefaultScratchBufferSize];
 static HAPAccessory bridgeAccessory;
 static HAPAccessory accessories[kMaxDevices];
 static HAPAccessory lockSensorAccessory;
-static const HAPAccessory* accessoryPointers[kMaxDevices + 2];
+static HAPAccessory elevatorAccessories[2];
+static const HAPAccessory* accessoryPointers[kMaxDevices + kMaxExtraAccessories + 1];
 static const HAPService* bridgeServices[] = {
     &accessoryInformationService, &hapProtocolInformationService, &pairingService, NULL
 };
@@ -120,11 +122,15 @@ static HAPDataCharacteristic lockSensorServiceSignature;
 static const HAPCharacteristic* lockSensorCharacteristics[3];
 static HAPService lockSensorService;
 static const HAPService* lockSensorAccessoryServices[3];
+static HAPBoolCharacteristic elevatorOnCharacteristics[2];
+static const HAPCharacteristic* elevatorSwitchCharacteristics[2][3];
+static HAPService elevatorSwitchServices[2];
+static const HAPService* elevatorAccessoryServices[2][3];
 static uint8_t lastLockSensorValue;
 
 #define kLockSensorAID UINT64_C(0x4C4F434B)
 
-#define kAccessorySchemaVersion "8\n"
+#define kAccessorySchemaVersion "9\n"
 #define kAccessorySchemaMarker "config/homekit-schema-version"
 
 static bool AccessorySchemaNeedsUpdate(void) {
@@ -263,6 +269,14 @@ void ihg2_hap_state_changed(size_t index, uint32_t changedMask) {
     }
 }
 
+void ihg2_hap_elevator_state_changed(size_t direction) {
+    if (!hapReady || direction >= 2 || ihg2_arm_elevator_available() == 0) return;
+    HAPAccessoryServerRaiseEvent(&accessoryServer,
+                                 (const HAPCharacteristic*) &elevatorOnCharacteristics[direction],
+                                 &elevatorSwitchServices[direction],
+                                 &elevatorAccessories[direction]);
+}
+
 int main(int argc, char* argv[]) {
     if (argc == 5 && strcmp(argv[1], "--log-writer") == 0) {
         return ihg2_arm_log_writer(argv[2], argv[3], argv[4]);
@@ -300,6 +314,7 @@ int main(int argc, char* argv[]) {
     }
     const size_t count = ihg2_arm_device_count();
     if (!count || count > kMaxDevices) return 2;
+    const bool elevatorAvailable = ihg2_arm_elevator_available() != 0;
     (void)mkdir("config", 0700);
     (void)mkdir(".hap_store", 0700);
     HAPPlatformKeyValueStoreCreate(&keyValueStore, &(const HAPPlatformKeyValueStoreOptions){ .rootDirectory = ".hap_store" });
@@ -554,9 +569,41 @@ int main(int argc, char* argv[]) {
             .callbacks = { .identify = IdentifyAccessory }
         };
         accessoryPointers[i] = &accessories[i];
-        if (ihg2_arm_device_aid(i) == kLockSensorAID) {
+        if (ihg2_arm_device_aid(i) == kLockSensorAID ||
+            ihg2_arm_device_aid(i) == IHG2_ARM_ELEVATOR_UP_AID ||
+            ihg2_arm_device_aid(i) == IHG2_ARM_ELEVATOR_DOWN_AID) {
             fprintf(stderr, "ihg2-arm: HomeKit accessory identifier collision\n");
             return 2;
+        }
+    }
+    size_t accessoryIndex = count;
+    if (elevatorAvailable) {
+        static const char* const names[] = { "呼梯上行", "呼梯下行" };
+        static const char* const serialNumbers[] = { "IHG2-ELEVATOR-UP", "IHG2-ELEVATOR-DOWN" };
+        static const uint64_t aids[] = {
+            IHG2_ARM_ELEVATOR_UP_AID, IHG2_ARM_ELEVATOR_DOWN_AID
+        };
+        for (size_t direction = 0; direction < 2; direction++) {
+            elevatorSwitchServices[direction] = ihg2SwitchService;
+            elevatorOnCharacteristics[direction] =
+                    *(const HAPBoolCharacteristic*) ihg2SwitchService.characteristics[1];
+            elevatorSwitchCharacteristics[direction][0] = ihg2SwitchService.characteristics[0];
+            elevatorSwitchCharacteristics[direction][1] =
+                    (const HAPCharacteristic*) &elevatorOnCharacteristics[direction];
+            elevatorSwitchCharacteristics[direction][2] = NULL;
+            elevatorSwitchServices[direction].characteristics = elevatorSwitchCharacteristics[direction];
+            elevatorAccessoryServices[direction][0] = &accessoryInformationService;
+            elevatorAccessoryServices[direction][1] = &elevatorSwitchServices[direction];
+            elevatorAccessoryServices[direction][2] = NULL;
+            elevatorAccessories[direction] = (HAPAccessory) {
+                .aid = aids[direction], .category = kHAPAccessoryCategory_BridgedAccessory,
+                .name = names[direction], .manufacturer = "Leelen",
+                .model = "Native Elevator Call", .serialNumber = serialNumbers[direction],
+                .firmwareVersion = IHG2_ARM_VERSION, .hardwareVersion = "1.0.0",
+                .services = elevatorAccessoryServices[direction],
+                .callbacks = { .identify = IdentifyAccessory }
+            };
+            accessoryPointers[accessoryIndex++] = &elevatorAccessories[direction];
         }
     }
     lockSensorServiceSignature = (HAPDataCharacteristic) {
@@ -603,8 +650,8 @@ int main(int argc, char* argv[]) {
         .services = lockSensorAccessoryServices,
         .callbacks = { .identify = IdentifyAccessory }
     };
-    accessoryPointers[count] = &lockSensorAccessory;
-    accessoryPointers[count + 1] = NULL;
+    accessoryPointers[accessoryIndex++] = &lockSensorAccessory;
+    accessoryPointers[accessoryIndex] = NULL;
     HAPAccessoryServerCreate(&accessoryServer, &serverOptions, &hapPlatform, &serverCallbacks, NULL);
     const bool configurationChanged = AccessorySchemaNeedsUpdate();
     HAPAccessoryServerStartBridge(&accessoryServer, &bridgeAccessory, accessoryPointers, configurationChanged);

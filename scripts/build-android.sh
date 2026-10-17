@@ -105,9 +105,11 @@ done
     -c "$repo_root/src/panel_config.cpp" -o "$out/obj/panel_config.o"
 "$cxx" -std=c++20 -Os -fPIC -ffunction-sections -fdata-sections -fno-rtti -pthread \
     -I"$repo_root/include" -c "$repo_root/src/lock_presence.cpp" -o "$out/obj/lock_presence.o"
+"$cxx" -std=c++20 -Os -fPIC -ffunction-sections -fdata-sections -fno-rtti \
+    -I"$repo_root/include" -c "$repo_root/src/native_elevator.cpp" -o "$out/obj/native_elevator.o"
 
 "$cxx" -pthread -Wl,--gc-sections -Wl,--no-undefined -pie -static-libstdc++ \
     "${objects[@]}" "$out/obj/vendor_protocol.o" "$out/obj/gateway_socket.o" "$out/obj/runtime.o" \
-    "$out/obj/panel_config.o" "$out/obj/lock_presence.o" \
+    "$out/obj/panel_config.o" "$out/obj/lock_presence.o" "$out/obj/native_elevator.o" \
     "$out/lib/libcrypto.a" "$mdns_library" -lm -ldl -o "$out/ihg2-arm-bridge"
 file "$out/ihg2-arm-bridge"
