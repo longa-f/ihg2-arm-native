@@ -1,6 +1,6 @@
 # Gateway protocol implementation and evidence
 
-The Android panel is an observed gateway client: it sends UDP heartbeats to `192.168.5.26:80`, receives heartbeat acknowledgements, and receives unsolicited state reports. The message identifiers are `0x0069`, `0x03ed`, and `0x03ee`. The panel's source UDP port is ephemeral, so the native bridge keeps one connected UDP socket for heartbeat sends and asynchronous reports.
+The Android panel is an observed gateway client: it sends UDP heartbeats to `192.0.2.12:80`, receives heartbeat acknowledgements, and receives unsolicited state reports. The message identifiers are `0x0069`, `0x03ed`, and `0x03ee`. The panel's source UDP port is ephemeral, so the native bridge keeps one connected UDP socket for heartbeat sends and asynchronous reports.
 
 The isolated ARM project now ports `ihg2-cpp`'s `protocol.cpp` and its bounded JSON parsing. It checks the 56-byte outer header, outer checksum, AES-128-CBC envelope, inner magic/length/checksum, configured MAC/device identity, message type, and JSON bounds. Heartbeat generation and encrypted report decoding are exercised with the separate bridge's test-only golden vectors. The response vector contains a `0x03ee` report; the heartbeat-ACK type `0x0000` is covered by a codec round-trip matching the installed-firmware rule.
 

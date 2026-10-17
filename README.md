@@ -49,11 +49,11 @@ Linux Fish：
 
 Linux：
 
-    ./preflight.sh 192.168.5.23
+    ./preflight.sh 192.0.2.11
 
 Windows PowerShell：
 
-    .\preflight.ps1 192.168.5.23
+    .\preflight.ps1 192.0.2.11
 
 将示例地址替换成中控屏的 IP。脚本会检查 ADB 连接、root 权限、硬件环境和存储情况；有检查失败时，先按提示处理。
 
@@ -61,11 +61,11 @@ Windows PowerShell：
 
 Linux：
 
-    ./install.sh 192.168.5.23
+    ./install.sh 192.0.2.11
 
 Windows 命令提示符或 PowerShell：
 
-    .\install.cmd 192.168.5.23
+    .\install.cmd 192.0.2.11
 
 中控屏的 ADB 端口默认为 1379。已有且仅有一台 ADB 设备在线时，可以省略 IP。首次安装和后续升级使用同一条命令；升级会保留 Apple 家庭配对数据。成功时，安装程序会确认 HomeKit 服务已启动。
 
@@ -75,11 +75,11 @@ Windows 命令提示符或 PowerShell：
 
 Linux：
 
-    ./install.sh 192.168.5.23 --doctor
+    ./install.sh 192.0.2.11 --doctor
 
 Windows：
 
-    .\install.cmd 192.168.5.23 -Doctor
+    .\install.cmd 192.0.2.11 -Doctor
 
 健康检查全部通过后，命令会显示 HomeKit 配对码。在 iPhone 的“家庭”App 中选择“添加配件”，按提示输入配对码。升级已有安装时无需重新配对。
 

@@ -94,8 +94,8 @@ int main() {
 
     const std::string neighbors =
             "IP address HW type Flags HW address Mask Device\n"
-            "192.168.5.26 0x1 0x2 aa:bb:cc:dd:ee:ff * eth0\n";
-    assert(gateway_ipv4_from_arp(neighbors, "AA-BB-CC-DD-EE-FF") == "192.168.5.26");
+            "192.0.2.12 0x1 0x2 aa:bb:cc:dd:ee:ff * eth0\n";
+    assert(gateway_ipv4_from_arp(neighbors, "AA-BB-CC-DD-EE-FF") == "192.0.2.12");
 
     bool rejected = false;
     try {
@@ -108,7 +108,7 @@ int main() {
     rejected = false;
     try {
         (void)gateway_ipv4_from_arp(
-                neighbors + "192.168.5.27 0x1 0x2 aa:bb:cc:dd:ee:ff * eth0\n",
+                neighbors + "192.0.2.13 0x1 0x2 aa:bb:cc:dd:ee:ff * eth0\n",
                 "aa:bb:cc:dd:ee:ff");
     } catch (const ProtocolError&) {
         rejected = true;

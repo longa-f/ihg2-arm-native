@@ -22,23 +22,23 @@
 
 Linux：
 
-    ./preflight.sh 192.168.5.23
+    ./preflight.sh 192.0.2.11
 
 Windows PowerShell：
 
-    .\preflight.ps1 192.168.5.23
+    .\preflight.ps1 192.0.2.11
 
-将示例 IP 替换成中控屏地址。也可以传入带端口的地址，例如 192.168.5.23:1379；若该屏使用其他端口，请填写实际端口。预检日志保存在发布包旁的 logs/preflight-*.log。
+将示例 IP 替换成中控屏地址。也可以传入带端口的地址，例如 192.0.2.11:1379；若该屏使用其他端口，请填写实际端口。预检日志保存在发布包旁的 logs/preflight-*.log。
 
 ## 安装或升级
 
 Linux：
 
-    ./install.sh 192.168.5.23
+    ./install.sh 192.0.2.11
 
 Windows 命令提示符或 PowerShell：
 
-    .\install.cmd 192.168.5.23
+    .\install.cmd 192.0.2.11
 
 也可以在 PowerShell 中直接运行 install.ps1。目标可以是中控屏 IP、带端口的 IP 或 ADB 序列号。省略目标时，系统要求只有一台已连接的设备。
 
@@ -56,11 +56,11 @@ Doctor 会显示 HomeKit 配对码，因此它的输出不会保存到安装日�
 
 Linux：
 
-    ./install.sh 192.168.5.23 --doctor
+    ./install.sh 192.0.2.11 --doctor
 
 Windows：
 
-    .\install.cmd 192.168.5.23 -Doctor
+    .\install.cmd 192.0.2.11 -Doctor
 
 Doctor 检查厂商 SDK 数据、配件数量、网关地址和心跳响应、HomeKit TCP 与 mDNS 监听、启动钩子的 SELinux 标签以及配对数据目录权限。它会隐藏网关密钥、家庭设备名称和标识；全部检查通过后，会显示受保护的 HomeKit 配对码。它只发送一个网关心跳，不发送任何开关、窗帘或空调控制指令。
 
@@ -84,11 +84,11 @@ Doctor 检查厂商 SDK 数据、配件数量、网关地址和心跳响应、Ho
 
 Linux：
 
-    ./install.sh PANEL_IP --configure-lock 192.168.1.100 02:00:00:00:00:01
+    ./install.sh PANEL_IP --configure-lock 192.0.2.10 02:00:00:00:00:01
 
 Windows 命令提示符或 PowerShell：
 
-    .\install.cmd PANEL_IP -ConfigureLock -LockIp 192.168.1.100 -LockMac 02:00:00:00:00:01
+    .\install.cmd PANEL_IP -ConfigureLock -LockIp 192.0.2.10 -LockMac 02:00:00:00:00:01
 
 将地址和 MAC 换成该户门锁的实际值。配置保存在屏端 /data/local/ihg2-arm-native/config/lock-sensor.conf，归 root 所有且权限为 0600，不写入程序或发布包。服务每五秒重新读取配置；门锁 IP 变化时重新执行命令即可，不需重编译或重启服务。该配置命令不会创建安装日志。
 
